@@ -1,0 +1,3 @@
+shlibs:Depends=kytensor-llm (>= 2.0.0), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 12)
+misc:Depends=
+misc:Pre-Depends=

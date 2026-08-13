@@ -1,0 +1,82 @@
+kytensor-llm (2.0.0-ok19k1.5) v11-2603-preview; urgency=medium
+
+  * BUG:
+    #591111 check callback value to avoid crash
+    #591111 support abort load model
+    #591111 反复快速的做4~6次合盖S3后，AI问答无响应或输出乱码（FR：1/1台，6/6次）
+  * 需求: 无
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- 刘意虎 <liuyihu@kylinos.cn>  Tue, 07 Jul 2026 11:25:51 +0800
+
+kytensor-llm (2.0.0-ok19k1.4) v11-2603-preview; urgency=medium
+
+  * BUG:
+    #530499 解决houmo上下文超出上限报错
+    #535633 解决加载混乱
+  * 需求: 无
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- 刘意虎 <liuyihu@kylinos.cn>  Sat, 03 May 2026 22:23:03 +0800
+
+kytensor-llm (2.0.0-ok19k1.3) v11-2603-preview; urgency=medium
+
+  * BUG:
+    #530499 解决houmo上下文超出上限报错
+    #535633 解决加载混乱
+  * 需求: 无
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- 刘意虎 <liuyihu@kylinos.cn>  Sat, 03 May 2026 21:18:53 +0800
+
+kytensor-llm (2.0.0-ok19k1.2) v11-2603-preview; urgency=medium
+
+  * BUG:
+    #530499 解决houmo上下文超出上限报错
+    #535633 解决加载混乱
+  * 需求: 无
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- 刘意虎 <liuyihu@kylinos.cn>  Sat, 03 May 2026 20:48:09 +0800
+
+kytensor-llm (2.0.0-ok19k1.1) v11-2603-preview; urgency=medium
+
+  * BUG: #382109 【AI助手】【文本对话】在回答过程中鼠标滑动卡顿
+  * 需求: 无
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- 刘意虎 <liuyihu@kylinos.cn>  Fri, 03 May 2026 19:56:43 +0800
+
+kytensor-llm (2.0.0-ok19k1.0) v11-2603-preview; urgency=medium
+
+  * BUG: 无
+  * 需求: #53205 add houmo kare pkg lib patch support
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- liuyihu <liuyihu@kylinos.cn>  Fri, 03 May 2026 15:08:34 +0800
+
+
+kytensor-llm (2.0.0-ok19) v11-2603-preview; urgency=medium
+
+  * BUG: 无
+  * 需求: #53205 add houmo kare pkg lib patch support
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- liuyihu <liuyihu@kylinos.cn>  Thu, 22 Jan 2026 15:08:34 +0800
+
+
+kytensor-llm (2.0.0-ok15k0.8) v11-2603-preview; urgency=medium
+
+  * BUG: #510467 修复在Arise2030卡上的推理问题
+  * 需求: 无
+  * 其他改动说明: 无
+  * 其他改动影响域: 无
+
+ -- liuyihu <liuyihu@kylinos.cn>  Thu, 22 Jan 2026 15:08:34 +0800

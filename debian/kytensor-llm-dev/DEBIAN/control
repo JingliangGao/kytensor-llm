@@ -1,0 +1,16 @@
+Package: kytensor-llm-dev
+Source: kytensor-llm
+Version: 2.0.0-ok19k1.5
+Architecture: amd64
+Maintainer: kylin <liuyihu@kylinos.cn>
+Installed-Size: 15042
+Depends: kytensor-llm (= 2.0.0-ok19k1.5), libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 12)
+Conflicts: llamacpp-dev
+Breaks: llamacpp-dev
+Replaces: llamacpp-dev
+Section: libdevel
+Priority: optional
+Homepage: https://github.com/ggerganov/llama.cpp
+Description: development files for llama.cpp
+ This package contains the header files to compile applications that use llama.cpp, and contains the binary files to run llama.cpp.
+ The main goal of llama.cpp is to enable LLM inference with minimal setup and state-of-the-art performance on a wide variety of hardware - locally and in the cloud.

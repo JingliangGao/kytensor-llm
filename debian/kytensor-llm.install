@@ -1,0 +1,8 @@
+usr/lib/*/libggml.so*
+usr/lib/*/libggml-base.so*
+usr/lib/*/libllama.so*
+usr/lib/*/libllama-common.so*
+usr/lib/*/libmtmd.so*
+usr/lib/*/libggml-cpu*.so
+usr/lib/*/*.so
+usr/share/kytensor/*

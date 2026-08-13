@@ -1,0 +1,114 @@
+#!/usr/bin/make -f
+# See debhelper(7) (uncomment to enable)
+# output every command that modifies files on the build system.
+#export DH_VERBOSE = 1
+
+DEB_HOST_ARCH := $(shell dpkg-architecture -qDEB_HOST_ARCH)
+DEB_HOST_MULTIARCH := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
+ifeq ($(DEB_HOST_ARCH),amd64)
+    HIP_ENABLE=ON
+    SYCL_ENABLE=OFF
+    BACKEND_NATIVE = OFF
+    CPU_ALL_VARIANTS=ON
+	DTK_ENABLE=ON
+    CXXFLAGS = "-I/opt/system/resource/xpu/houmo"
+else
+    HIP_ENABLE=OFF
+    SYCL_ENABLE=OFF
+    CPU_ALL_VARIANTS=OFF
+    BACKEND_NATIVE = OFF
+	DTK_ENABLE=OFF
+    CXXFLAGS = "-I/opt/system/resource/xpu/houmo"
+endif
+
+
+# check DTK_DIR whether exists
+DTK_DIR=/home/kylin/lyz/dtk-26.04 
+ifeq ($(DTK_ENABLE),ON)
+	ifeq ($(strip $(DTK_DIR)),)
+		$(error DTK_ENABLE is ON but DTK_DIR is empty. Please set DTK_DIR to a valid DTK installation path.)
+	endif
+
+	ifeq ($(wildcard $(DTK_DIR)),)
+		$(error DTK_ENABLE is ON but DTK_DIR path '$(DTK_DIR)' does not exist. Please set DTK_DIR to a valid DTK installation path.)
+	endif
+
+	DCU_CONFIG=-DAMDGPU_TARGETS=gfx928 \
+    	-DGGML_CUDA_FORCE_MMQ=ON \
+    	-DGGML_HIP_MMQ_MFMA=OFF \
+    	-DGGML_HIP_GRAPHS=OFF \
+    	-DLLAMA_HIP_DTK=$(DTK_ENABLE) \
+    	-DDTK_PATH=$(DTK_DIR) \
+    	-DLLAMA_BUILD_TESTS=OFF \
+    	-DGGML_BUILD_TESTS=OFF
+endif
+
+# see FEATURE AREAS in dpkg-buildflags(1)
+#export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# see ENVIRONMENT in dpkg-buildflags(1)
+# package maintainers to append CFLAGS
+#export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
+# package maintainers to append LDFLAGS
+#export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
+
+%:
+	dh $@
+
+
+# dh_make generated override targets
+# This is example for Cmake (See https://bugs.debian.org/641051 )
+override_dh_auto_configure:
+	rm -rf build
+	mkdir -p build
+	cd build && cmake .. \
+		-DGGML_BACKEND_DL=ON \
+		-DGGML_BACKEND_DIR=/usr/lib/$(DEB_HOST_MULTIARCH) \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib/$(DEB_HOST_MULTIARCH) \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DGGML_CUDA=OFF \
+		-DGGML_HIP=$(HIP_ENABLE) \
+		-DGGML_SYCL=$(SYCL_ENABLE) \
+		-DGGML_SYCL_DNN=$(SYCL_ENABLE) \
+		-DGGML_SYCL_BUILD_WITH_INTEL_SUBBUILD=$(SYCL_ENABLE) \
+		-DGGML_NATIVE=$(BACKEND_NATIVE) \
+		-DGGML_AVX512=ON \
+		-DGGML_CPU_ALL_VARIANTS=$(CPU_ALL_VARIANTS) \
+		-DGGML_PONN=OFF \
+		-DGGML_RPP=OFF \
+		-DGGML_RPP_USE_DFS=OFF \
+		$(DCU_CONFIG) \
+		-DGGML_VULKAN=OFF
+
+override_dh_auto_build:
+	cd build && make -j$(nproc)
+
+override_dh_auto_test:
+	true
+
+override_dh_dwz:
+
+ifeq ($(DEB_HOST_ARCH),arm64)
+	# 在 arm64 架构下禁用 dh_dwz
+	true
+endif
+
+override_dh_auto_install:
+	rm -rf $(CURDIR)/debian/tmp
+	cd build && make install DESTDIR=$(CURDIR)/debian/tmp
+
+override_dh_strip:
+	dh_strip
+
+override_dh_install:
+	dh_install
+
+override_dh_shlibdeps:
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info
+
+clean:
+	rm -rf build
+	dh_clean

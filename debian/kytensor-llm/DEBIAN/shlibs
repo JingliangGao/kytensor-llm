@@ -1,0 +1,3 @@
+libggml-base 0 kytensor-llm (>= 2.0.0)
+libggml 0 kytensor-llm (>= 2.0.0)
+libllama-common 0 kytensor-llm (>= 2.0.0)

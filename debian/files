@@ -1,0 +1,5 @@
+kytensor-llm-dbgsym_2.0.0-ok19k1.5_amd64.deb debug optional automatic=yes
+kytensor-llm-dev-dbgsym_2.0.0-ok19k1.5_amd64.deb debug optional automatic=yes
+kytensor-llm-dev_2.0.0-ok19k1.5_amd64.deb libdevel optional
+kytensor-llm_2.0.0-ok19k1.5_amd64.buildinfo libs optional
+kytensor-llm_2.0.0-ok19k1.5_amd64.deb libs optional
