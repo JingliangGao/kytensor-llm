@@ -2,14 +2,17 @@
 
 # set some variables
 CUR_DIR=$(pwd)
-INSTALL_DRIVER=OFF                          # install driver
-INSTALL_RUNTIMETIME=OFF                     # install runtime 
-BUILD_PROJECT=OFF                           # build project
 VENDOR_DIR=${CUR_DIR}/vendor/innosilicon/1.0.1               # vendor directory
 MODEL_PATH=/home/kylin/gjl/model/Qwen_Qwen3-8B-Q4_K_M.gguf   # model path
-CONFIG_FLAG="default"                       # "default", "d3000"
-BUILD_DIR=build_innosilicon                 # build directory
-TEST_SERVER=ON                              # test server
+CONFIG_FLAG="default"                                        # "default", "d3000" 
+BUILD_DIR=build_innosilicon                                  # build directory
+RELEASE_DIR=release                                          # release directory
+INSTALL_DRIVER=OFF                                           # install driver
+INSTALL_RUNTIMETIME=OFF                                      # install runtime 
+BUILD_PROJECT=OFF                                            # build project
+BUILD_DEBIAN=OFF                                             # build debian 
+TEST_SERVER=OFF                                              # test server
+MOVE_FILES=OFF                                               # move files 
 
 # install driver
 if [ ${INSTALL_DRIVER} == "ON" ]; then
@@ -87,16 +90,25 @@ if [ ${BUILD_PROJECT} == "ON" ]; then
     make -j$(nproc)
 fi
 
-# test 
+# refresh build directory
+if [ ${BUILD_DEBIAN} == "ON" ]; then
+    echo "[INFO] Install build dependencies ... "
+    # sudo apt-get update
+    # sudo apt-get install -y build-essential cmake ninja-build pkg-config git debhelper-compat
 
-## test server
+    echo "[INFO] Build debian package ... "
+    cd ${CUR_DIR}
+    dpkg-buildpackage -uc -us
+fi
+
+# test server
 if [ ${TEST_SERVER} == "ON" ]; then
-    echo "[INFO] Test server ... "
+    echo "[INFO] Run server ... "
     cd ${CUR_DIR}/${BUILD_DIR}/bin
     ./llama-server \
       -m ${MODEL_PATH} \
       --host 0.0.0.0 \
-      --port 8888 \
+      --port 8000 \
       -c 4096 \
       -ctk bf16 \
       -ctv bf16 \
@@ -105,6 +117,39 @@ if [ ${TEST_SERVER} == "ON" ]; then
       --fit off \
       --jinja \
       --keep 256
+fi
+
+# move files
+if [ ${MOVE_FILES} == "ON" ]; then
+    echo "[INFO] Refresh release directory: ${RELEASE_DIR}"
+    cd ${CUR_DIR}
+    if [ -d ${RELEASE_DIR} ]; then
+      rm -rf ${RELEASE_DIR}
+    fi
+    mkdir -p ${RELEASE_DIR}
+
+    echo "[INFO] Move files ... "
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "arm"* ]] || [[ "$ARCH" == "aarch64" ]]; then
+      mkdir -p ${RELEASE_DIR}/arm64
+      if [ -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5_arm64.deb ]; then
+        cp -f ${CUR_DIR}/../*.deb ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5.tar.xz ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5_arm64.changes ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5.dsc ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5_arm64.buildinfo ${RELEASE_DIR}/x64/     
+      fi
+    else
+      mkdir -p ${RELEASE_DIR}/x64
+      if [ -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5_amd64.deb ]; then
+        cp -f ${CUR_DIR}/../*.deb ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5.tar.xz ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5_amd64.changes ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5.dsc ${RELEASE_DIR}/x64/
+        cp -f ${CUR_DIR}/../kytensor-llm_2.0.0-ok19k1.5_amd64.buildinfo ${RELEASE_DIR}/x64/        
+      fi
+    fi
+
 fi
 
 
