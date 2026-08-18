@@ -38,7 +38,7 @@ debian/tmp/usr/lib/x86_64-linux-gnu/libggml-cpu-skylakex.so
 debian/tmp/usr/lib/x86_64-linux-gnu/libggml-cpu-sse42.so
 debian/tmp/usr/lib/x86_64-linux-gnu/libggml-cpu-x64.so
 debian/tmp/usr/lib/x86_64-linux-gnu/libggml-cpu-zen4.so
-debian/tmp/usr/lib/x86_64-linux-gnu/libggml-hip.so
+debian/tmp/usr/lib/x86_64-linux-gnu/libggml-rpp.so
 debian/tmp/usr/lib/x86_64-linux-gnu/libggml.so
 debian/tmp/usr/lib/x86_64-linux-gnu/libllama-common.so
 debian/tmp/usr/lib/x86_64-linux-gnu/libllama.so

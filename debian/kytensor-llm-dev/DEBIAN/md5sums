@@ -32,7 +32,7 @@ b8e069753672cff93cd8d6f0b8a290c1  usr/bin/llama-results
 bef31f6ad93cc2a754118215f1035921  usr/bin/llama-retrieval
 566c446ecd17c5f0d507b734ff51f690  usr/bin/llama-save-load-state
 2029e0123167392d23a5839031c9eb53  usr/bin/llama-server
-673145de1c22e24ad0ba12ee81223519  usr/bin/llama-simple
+de104deb2ef4b08fad16243c0b976399  usr/bin/llama-simple
 041fb5c731bbac4147e369f529213527  usr/bin/llama-simple-chat
 34e605d5f1c481e398991d85ea437ccd  usr/bin/llama-speculative
 ddeb6c3e4b66343f1bfb3dff095a8d43  usr/bin/llama-speculative-simple
@@ -84,7 +84,7 @@ ea45ee06856ea90c914ad038b61aa3bb  usr/include/llamacpp/mtmd.h
 8460cf770fcaa5a7d04f13110026825d  usr/include/llamacpp/vendor/cpp-httplib/httplib.h
 57678c38c69af31d32a6ae56a9cf9548  usr/include/llamacpp/vendor/nlohmann/json.hpp
 cca25d2b1bfa720b733e27f24b8c72ac  usr/include/llamacpp/vendor/nlohmann/json_fwd.hpp
-24352738bd41e48a5861e21bddd55f89  usr/lib/x86_64-linux-gnu/cmake/ggml/ggml-config.cmake
+15b6f15aa847e7bb8d99b21724207d0b  usr/lib/x86_64-linux-gnu/cmake/ggml/ggml-config.cmake
 499485bdc6b61d369109f7535a1bedfd  usr/lib/x86_64-linux-gnu/cmake/ggml/ggml-version.cmake
 6796dffee1c9bb293bd171ab2d6e280c  usr/lib/x86_64-linux-gnu/cmake/llama/llama-config.cmake
 5d19aa850b52b3af097c599b37da4e28  usr/lib/x86_64-linux-gnu/cmake/llama/llama-version.cmake

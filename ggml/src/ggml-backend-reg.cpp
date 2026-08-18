@@ -624,18 +624,6 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     // 先加载CPU后端作为后备
     ggml_backend_load_best("cpu", silent, dir_path);
 
-    // #ifdef GGML_HIP_DTK
-    //     // DTK (Hygon ROCm-compatible toolkit) 模式下，直接加载 HIP 后端，
-    //     // 跳过后续的 sysfs 设备探测（HoumoNPU 等），因为 DTK GPU 不走那条路径。
-    //     GGML_LOG_INFO("Loading HIP backend (DTK mode)...\n");
-    //     if (ggml_backend_load_best("hip", silent, dir_path)) {
-    //         GGML_LOG_INFO("HIP backend loaded successfully.\n");
-    //     } else {
-    //         GGML_LOG_ERROR("Failed to load HIP backend.\n");
-    //     }
-    
-    // #endif
-
     char plugin_name[XPU_PLUGIN_NAME_SIZE] = {0};
     char plugin_lib_path[XPU_PLUGIN_LIB_PATH] = {0};
 

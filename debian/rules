@@ -7,11 +7,11 @@ DEB_HOST_ARCH := $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_MULTIARCH := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 ifeq ($(DEB_HOST_ARCH),amd64)
-    HIP_ENABLE=ON
+    HIP_ENABLE=OFF
     SYCL_ENABLE=OFF
     BACKEND_NATIVE = OFF
     CPU_ALL_VARIANTS=ON
-	DTK_ENABLE=ON
+	DTK_ENABLE=OFF
     CXXFLAGS = "-I/opt/system/resource/xpu/houmo"
 else
     HIP_ENABLE=OFF
@@ -24,7 +24,7 @@ endif
 
 
 # check DTK_DIR whether exists
-DTK_DIR=/home/kylin/lyz/dtk-26.04 
+DTK_DIR=/opt/dtk-26.04 
 ifeq ($(DTK_ENABLE),ON)
 	ifeq ($(strip $(DTK_DIR)),)
 		$(error DTK_ENABLE is ON but DTK_DIR is empty. Please set DTK_DIR to a valid DTK installation path.)
@@ -78,13 +78,15 @@ override_dh_auto_configure:
 		-DGGML_AVX512=ON \
 		-DGGML_CPU_ALL_VARIANTS=$(CPU_ALL_VARIANTS) \
 		-DGGML_PONN=OFF \
-		-DGGML_RPP=OFF \
-		-DGGML_RPP_USE_DFS=OFF \
+		-DGGML_RPP=ON \
+		-DGGML_RPP_USE_DFS=ON \
+		-DLLAMA_BUILD_TESTS=OFF \
+		-DGGML_BUILD_TESTS=OFF \
 		$(DCU_CONFIG) \
 		-DGGML_VULKAN=OFF
 
 override_dh_auto_build:
-	cd build && make -j$(nproc)
+	cd build && make -j8
 
 override_dh_auto_test:
 	true
