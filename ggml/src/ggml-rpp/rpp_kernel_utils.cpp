@@ -2,7 +2,6 @@
 
 #include "bfloat16.h"
 #include "ggml-impl.h"
-#include "ggml-rpp/rpp_dev_resources.h"
 #include "ggml-rpp/rpp_dfs.h"
 
 #include <assert.h>
@@ -36,6 +35,9 @@ struct rpp_dfs_state {
 std::mutex                             g_rpp_dfs_mutex;
 std::unordered_map<int, rpp_dfs_state> g_rpp_dfs_states;
 
+std::mutex                                            g_rpp_function_cache_mutex;
+std::unordered_map<RPPmodule, std::unordered_map<std::string, RPPfunction>> g_rpp_function_cache;
+
 int get_cached_device() {
     thread_local int device = -1;
     if (device < 0) {
@@ -46,7 +48,18 @@ int get_cached_device() {
 }
 
 RPPfunction get_cached_function(RPPmodule cuMod, const std::string & kernName) {
-    return rpp_dev_resource_manager::instance().get_or_load_function(get_cached_device(), cuMod, kernName);
+    std::lock_guard<std::mutex> lock(g_rpp_function_cache_mutex);
+    auto &                      module_cache = g_rpp_function_cache[cuMod];
+    auto                        it           = module_cache.find(kernName);
+    if (it != module_cache.end()) {
+        return it->second;
+    }
+
+    RPPfunction hfunc = nullptr;
+    RPPresult   res   = rppModuleGetFunction(&hfunc, cuMod, kernName.c_str());
+    assert(res == RPP_SUCCESS);
+    module_cache.emplace(kernName, hfunc);
+    return hfunc;
 }
 
 void maybe_set_kernel_dfs_frequency(const std::string & kernName, dim3 threadsPerBlock, RPPstream kernelStream) {

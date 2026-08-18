@@ -67,6 +67,20 @@
     { "name": "x64-linux-gcc-reldbg", "inherits": [ "base", "x64-linux-gcc", "reldbg" ] },
     { "name": "x64-linux-gcc+static-release", "inherits": [ "base", "x64-linux-gcc", "release", "static" ] },
 
+    {
+        "name": "x64-linux-hip-debug",
+        "inherits": [ "base", "debug" ],
+        "cacheVariables": {
+            "GGML_HIP": "ON",
+            "AMDGPU_TARGETS": "gfx928",
+            "GGML_CUDA_FORCE_MMQ": "ON",
+            "GGML_HIP_MMQ_MFMA": "OFF",
+            "GGML_HIP_GRAPHS": "OFF",
+            "GGML_HIP_DTK": "ON",
+            "DTK_PATH": "/home/kylin/lyz/dtk-26.04"
+        }
+    },
+
     { "name": "arm64-windows-llvm-debug", "inherits": [ "base", "arm64-windows-llvm", "debug" ] },
     { "name": "arm64-windows-llvm-release", "inherits": [ "base", "arm64-windows-llvm", "reldbg" ] },
     { "name": "arm64-windows-llvm+static-release", "inherits": [ "base", "arm64-windows-llvm", "reldbg", "static" ] },

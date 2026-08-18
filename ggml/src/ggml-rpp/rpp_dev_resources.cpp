@@ -115,10 +115,9 @@ struct lut_workspace_entry {
 };
 
 struct module_entry {
-    RPPmodule                                  module{ nullptr };
-    uint64_t                                   owner_id{ 0 };
-    std::string                                path;
-    std::unordered_map<std::string, RPPfunction> functions;
+    RPPmodule   module{ nullptr };
+    uint64_t    owner_id{ 0 };
+    std::string path;
 };
 
 struct custom_entry {
@@ -358,36 +357,6 @@ class module_resource_store {
     }
 
     /**
-     * Gets or resolves one function owned by a managed module.
-     *
-     * @param module Parent module handle.
-     * @param function_name Kernel function name.
-     * @return Cached or newly resolved function handle.
-     */
-    RPPfunction get_or_load_function(RPPmodule module, const std::string & function_name) {
-        for (auto & item : entries_) {
-            module_entry & entry = item.second;
-            if (entry.module != module) {
-                continue;
-            }
-
-            auto function_iter = entry.functions.find(function_name);
-            if (function_iter != entry.functions.end()) {
-                return function_iter->second;
-            }
-
-            RPPfunction function = nullptr;
-            if (rppModuleGetFunction(&function, module, function_name.c_str()) != RPP_SUCCESS || function == nullptr) {
-                throw std::runtime_error("rppModuleGetFunction failed for " + function_name);
-            }
-            entry.functions.emplace(function_name, function);
-            return function;
-        }
-
-        throw std::invalid_argument("RPP function parent module is not managed");
-    }
-
-    /**
      * Releases matching modules.
      *
      * @param owner_id Owner filter value.
@@ -401,7 +370,6 @@ class module_resource_store {
                 ++iter;
                 continue;
             }
-            iter->second.functions.clear();
             if (iter->second.module != nullptr && rppModuleUnload(iter->second.module) != RPP_SUCCESS) {
                 success = false;
                 ++iter;
@@ -616,15 +584,6 @@ class dev_resource_group {
     }
 
     /**
-     * Gets or resolves one function owned by a managed module.
-     */
-    RPPfunction get_or_load_function(RPPmodule module, const std::string & function_name) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        scoped_dev                  dev(device_);
-        return modules_.get_or_load_function(module, function_name);
-    }
-
-    /**
      * Gets or creates one KPARA allocation.
      */
     rpp_managed_kpara get_or_create_kpara(const std::string &                                   key,
@@ -827,16 +786,6 @@ RPPmodule rpp_dev_resource_manager::get_or_load_module(int                 devic
         throw std::invalid_argument("RPP module key and path must not be empty");
     }
     return impl_->get_or_create(device)->get_or_load_module(key, module_path, owner_id);
-}
-
-RPPfunction rpp_dev_resource_manager::get_or_load_function(int                 device,
-                                                           RPPmodule           module,
-                                                           const std::string & function_name) {
-    validate_dev(device);
-    if (module == nullptr || function_name.empty()) {
-        throw std::invalid_argument("RPP module and function name must be valid");
-    }
-    return impl_->get_or_create(device)->get_or_load_function(module, function_name);
 }
 
 rpp_managed_kpara rpp_dev_resource_manager::get_or_create_kpara(int                         device,

@@ -122,12 +122,6 @@ Recommended options:
 - `-np 1`: set the number of parallel slots to 1.
 - `--keep 128`: keep the first 128 prompt tokens.
 
-## Inference Cancellation
-
-RPP receives the inference abort callback registered through `llama_set_abort_callback()`. It checks the callback while executing a graph and returns `GGML_STATUS_ABORTED` after synchronizing submitted device work when cancellation is requested.
-
-Cancellation applies only to the current graph computation. RPP does not latch the callback result, so the same llama context can process a later request after the application clears its cancellation state. Model-loading cancellation is handled separately by `llama_progress_callback`.
-
 ## Using the C/C++ API
 
 This section describes how to integrate `ggml-rpp` from an application instead of running only the demo binaries. There are two practical integration paths:

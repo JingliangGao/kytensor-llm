@@ -159,7 +159,7 @@ struct rpp_managed_kpara {
  *
  * The public interface is intentionally independent of the internal resource
  * hierarchy. The implementation groups resources by Dev and then by resource
- * type: LUT, RoPE, module/function, KPARA, and custom resources.
+ * type: LUT, RoPE, module, KPARA, and custom resources.
  *
  * Release operations do not synchronize streams and do not call rtDeviceReset.
  * The caller must stop inference, synchronize all relevant streams, and destroy
@@ -221,19 +221,6 @@ class rpp_dev_resource_manager {
                                  const std::string & key,
                                  const std::string & module_path,
                                  uint64_t            owner_id = 0);
-
-    /**
-     * Gets or resolves a function owned by a managed RPP module.
-     *
-     * Function handles are cached only for the lifetime of their parent module
-     * and are invalidated before that module is unloaded.
-     *
-     * @param device Target RPP Dev.
-     * @param module Managed parent module.
-     * @param function_name Kernel function name.
-     * @return Cached or newly resolved function handle.
-     */
-    RPPfunction get_or_load_function(int device, RPPmodule module, const std::string & function_name);
 
     /**
      * Gets or creates an external shared KPARA allocation.

@@ -165,15 +165,7 @@ static bool is_matmul_weight(const ggml_tensor * tensor) {
     if (is_conv_weight(tensor)) {
         return false;
     }
-    auto ggml_rpp_name_ends_with = [](const std::string& name, const std::string& suffix) -> bool {
-        return name.size() >= suffix.size() &&
-               name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
-    };
-
     std::string name = ggml_get_name(tensor);
-    if (ggml_rpp_name_ends_with(name, "per_layer_token_embd.weight")) {
-        return false;
-    }
     static const std::unordered_set<std::string> matmul_weight_suffixes{
         "output.weight",      "attn_q.weight",      "attn_k.weight",        "attn_v.weight",
         "attn_output.weight", "ffn_gate.weight",    "ffn_up.weight",        "ffn_down.weight",

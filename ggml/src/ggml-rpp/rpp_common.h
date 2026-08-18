@@ -559,6 +559,7 @@ struct ggml_backend_rpp_context {
     uint32_t           stub_kv_step{ 0 };
     ggml_abort_callback abort_callback{ nullptr };
     void *              abort_callback_data{ nullptr };
+    std::atomic_bool    abort_requested{ false };
     std::atomic_bool    resources_released{ false };
     mutable std::mutex  abort_mutex;
     std::mutex          release_mutex;
@@ -603,9 +604,9 @@ struct ggml_backend_rpp_context {
     void set_abort_callback(ggml_abort_callback callback, void * data);
 
     /**
-     * Checks the current inference abort callback state.
+     * Checks whether inference abort has been requested.
      *
-     * @return True when backend resources have been released or the current callback requests abort.
+     * @return True when a previous or current callback requests abort.
      */
     bool should_abort();
 

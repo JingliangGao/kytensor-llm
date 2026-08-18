@@ -8,12 +8,12 @@ c933ced40a545d57d0a7d6b839b92f3f  usr/lib/x86_64-linux-gnu/libggml-cpu-icelake.s
 40e0d2825fa6f383f96c48dbadabc04a  usr/lib/x86_64-linux-gnu/libggml-cpu-ivybridge.so
 c86d62ba8c863f70a8d7a460f69e37b0  usr/lib/x86_64-linux-gnu/libggml-cpu-piledriver.so
 30bf9c721d6ef39185f881782c9e6cb1  usr/lib/x86_64-linux-gnu/libggml-cpu-sandybridge.so
-70362bdb20ca5d337588df80b47b3e67  usr/lib/x86_64-linux-gnu/libggml-cpu-sapphirerapids.so
+fa438d7a3581b80327df21eeedb72f71  usr/lib/x86_64-linux-gnu/libggml-cpu-sapphirerapids.so
 60efb1341b9a42ed3dd34c6654169570  usr/lib/x86_64-linux-gnu/libggml-cpu-skylakex.so
 29c19a7ea1a49110f46056ac3276b355  usr/lib/x86_64-linux-gnu/libggml-cpu-sse42.so
 52c178289c400ccc386a224592d1c7aa  usr/lib/x86_64-linux-gnu/libggml-cpu-x64.so
 c99fb3cf161aa346dd4a7724b2e953bf  usr/lib/x86_64-linux-gnu/libggml-cpu-zen4.so
-ebbc7e2a76957fc9bbc41ff40a4c0f3a  usr/lib/x86_64-linux-gnu/libggml-rpp.so
+9f80a473c13ed2f469a8d45c4223ba42  usr/lib/x86_64-linux-gnu/libggml-hip.so
 44f1dd88eddeb3a62d68b601564e0b42  usr/lib/x86_64-linux-gnu/libggml.so.0.10.0
 1bec93391ad6946c63cdc9769cbd8d94  usr/lib/x86_64-linux-gnu/libllama-common.so.0.0.91
 5cfbca6df311508a7819f6d4b0be73da  usr/lib/x86_64-linux-gnu/libllama.so

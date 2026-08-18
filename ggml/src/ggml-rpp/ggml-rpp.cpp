@@ -196,30 +196,16 @@ void rpp_kernel_cgraph::graph_launch(ggml_backend_rpp_context & ctx, rtStream_t 
     GGML_ABORT(GGML_RPP_NAME " error");
 }
 
-struct ggml_rpp_runtime_lifecycle {
-    std::mutex mutex;
-    bool        exit_requested = false;
-    size_t      live_resources = 0;
-};
-
-/**
- * Returns the process-wide RPP Runtime lifecycle state.
- *
- * @return Lifecycle state serialized by its internal mutex.
- */
-static ggml_rpp_runtime_lifecycle & ggml_rpp_runtime_lifecycle_get() {
-    static ggml_rpp_runtime_lifecycle lifecycle;
-    return lifecycle;
-}
-
 // this is faster on Windows
 // probably because the Windows RPP libraries forget to make this check before invoking the drivers
 void ggml_rpp_set_device(int device) {
     int current_device;
     RPP_CHECK(rtGetDevice(&current_device));
+
     if (device == current_device) {
         return;
     }
+
     RPP_CHECK(rtSetDevice(device));
 }
 
@@ -333,47 +319,6 @@ bool ggml_rpp_node_has_matching_properties(ggml_tensor * node, ggml_rpp_node * r
         }
     }
     return has_matching_properties;
-}
-
-/**
- * Acquires an RPP resource and increments its live reference count.
- */
-static void ggml_rpp_runtime_acquire() {
-    ggml_rpp_runtime_lifecycle & lifecycle = ggml_rpp_runtime_lifecycle_get();
-    std::lock_guard<std::mutex>  lock(lifecycle.mutex);
-
-    if (lifecycle.exit_requested) {
-        GGML_LOG_WARN("%s: canceling pending RPP Runtime exit, live_resources=%zu\n", __func__,
-                      lifecycle.live_resources);
-    }
-
-    // A new resource starts a load cycle and cancels any pending exit request.
-    lifecycle.exit_requested = false;
-    ++lifecycle.live_resources;
-}
-
-/**
- * Releases an RPP resource and exits the Runtime when the current load cycle ends.
- *
- * @param request_exit True when backend or model-weight teardown requests Runtime shutdown after all resources are released.
- */
-static void ggml_rpp_runtime_release(bool request_exit) {
-    ggml_rpp_runtime_lifecycle & lifecycle = ggml_rpp_runtime_lifecycle_get();
-    std::lock_guard<std::mutex>  lock(lifecycle.mutex);
-
-    GGML_ASSERT(lifecycle.live_resources > 0);
-    --lifecycle.live_resources;
-
-    if (request_exit && !lifecycle.exit_requested) {
-        GGML_LOG_INFO("%s: RPP Runtime exit requested, live_resources=%zu\n", __func__, lifecycle.live_resources);
-    }
-    lifecycle.exit_requested = lifecycle.exit_requested || request_exit;
-    if (lifecycle.exit_requested && lifecycle.live_resources == 0) {
-        GGML_LOG_WARN("%s: shutting down RPP Runtime after all resources were released\n", __func__);
-        RPP_CHECK(rtRuntimeShutdown());
-        lifecycle.exit_requested = false;
-        GGML_LOG_INFO("%s: RPP Runtime shut down; the next rt* call will recreate it\n", __func__);
-    }
 }
 
 static rtError_t ggml_rpp_device_malloc(void ** ptr, size_t size, int device) {
@@ -917,10 +862,8 @@ struct ggml_backend_rpp_buffer_context {
  * @param buffer The RPP buffer to free.
  */
 static void ggml_backend_rpp_buffer_free_buffer(ggml_backend_buffer_t buffer) {
-    const bool is_weight                  = ggml_backend_buffer_get_usage(buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
     ggml_backend_rpp_buffer_context * ctx = (ggml_backend_rpp_buffer_context *) buffer->context;
     delete ctx;
-    ggml_rpp_runtime_release(is_weight);
 }
 
 static bool ggml_backend_buffer_is_rpp(ggml_backend_buffer_t buffer) {
@@ -968,9 +911,11 @@ struct ggml_rpp_weights_cache_index_entry {
 };
 
 struct ggml_rpp_weights_cache_staging_buffer {
-    void * ptr      = nullptr;
-    size_t capacity = 0;
-    bool   in_use   = false;
+    void *    ptr          = nullptr;
+    size_t    capacity     = 0;
+    bool      in_use       = false;
+    bool      copy_pending = false;
+    rtEvent_t copy_done    = nullptr;
 };
 
 struct ggml_rpp_weights_cache_state {
@@ -980,12 +925,22 @@ struct ggml_rpp_weights_cache_state {
     std::string                                                         file_path;
     int                                                                 fd = -1;
     std::unordered_map<std::string, ggml_rpp_weights_cache_index_entry> index;
-    ggml_rpp_weights_cache_staging_buffer                               staging_buffer;
+    std::array<ggml_rpp_weights_cache_staging_buffer, 2>                staging_buffers;
+    size_t                                                              staging_next = 0;
 
     ~ggml_rpp_weights_cache_state() {
-        if (staging_buffer.ptr != nullptr) {
-            rtFreeHost(staging_buffer.ptr);
-            staging_buffer.ptr = nullptr;
+        for (ggml_rpp_weights_cache_staging_buffer & buffer : staging_buffers) {
+            if (buffer.copy_pending && buffer.copy_done != nullptr) {
+                RPP_CHECK(rtEventSynchronize(buffer.copy_done));
+            }
+            if (buffer.ptr != nullptr) {
+                rtFreeHost(buffer.ptr);
+                buffer.ptr = nullptr;
+            }
+            if (buffer.copy_done != nullptr) {
+                RPP_CHECK(rtEventDestroy(buffer.copy_done));
+                buffer.copy_done = nullptr;
+            }
         }
         if (fd >= 0) {
             close(fd);
@@ -1035,6 +990,13 @@ static bool ggml_rpp_weights_cache_pread_full(int fd, void * dst, size_t size, u
     return true;
 }
 
+static void ggml_rpp_weights_cache_staging_wait_locked(ggml_rpp_weights_cache_staging_buffer & buffer) {
+    if (buffer.copy_pending) {
+        RPP_CHECK(rtEventSynchronize(buffer.copy_done));
+        buffer.copy_pending = false;
+    }
+}
+
 static bool ggml_rpp_weights_cache_staging_resize_locked(ggml_rpp_weights_cache_staging_buffer & buffer, size_t size) {
     if (buffer.ptr != nullptr && buffer.capacity >= size) {
         return true;
@@ -1057,20 +1019,82 @@ static bool ggml_rpp_weights_cache_staging_resize_locked(ggml_rpp_weights_cache_
 }
 
 static void * ggml_rpp_weights_cache_staging_acquire_locked(ggml_rpp_weights_cache_state & cache_state, size_t size) {
-    ggml_rpp_weights_cache_staging_buffer & buffer = cache_state.staging_buffer;
-    if (buffer.in_use || !ggml_rpp_weights_cache_staging_resize_locked(buffer, size)) {
-        return nullptr;
+    for (size_t i = 0; i < cache_state.staging_buffers.size(); ++i) {
+        const size_t idx = (cache_state.staging_next + i) % cache_state.staging_buffers.size();
+        ggml_rpp_weights_cache_staging_buffer & buffer = cache_state.staging_buffers[idx];
+        if (!buffer.in_use && !buffer.copy_pending && buffer.ptr != nullptr && buffer.capacity >= size) {
+            buffer.in_use            = true;
+            cache_state.staging_next = (idx + 1) % cache_state.staging_buffers.size();
+            return buffer.ptr;
+        }
     }
 
-    buffer.in_use = true;
-    return buffer.ptr;
+    for (size_t i = 0; i < cache_state.staging_buffers.size(); ++i) {
+        const size_t idx = (cache_state.staging_next + i) % cache_state.staging_buffers.size();
+        ggml_rpp_weights_cache_staging_buffer & buffer = cache_state.staging_buffers[idx];
+        if (!buffer.in_use && !buffer.copy_pending) {
+            if (!ggml_rpp_weights_cache_staging_resize_locked(buffer, size)) {
+                return nullptr;
+            }
+            buffer.in_use            = true;
+            cache_state.staging_next = (idx + 1) % cache_state.staging_buffers.size();
+            return buffer.ptr;
+        }
+    }
+
+    for (size_t i = 0; i < cache_state.staging_buffers.size(); ++i) {
+        const size_t idx = (cache_state.staging_next + i) % cache_state.staging_buffers.size();
+        ggml_rpp_weights_cache_staging_buffer & buffer = cache_state.staging_buffers[idx];
+        if (!buffer.in_use && buffer.copy_pending) {
+            ggml_rpp_weights_cache_staging_wait_locked(buffer);
+            if (!ggml_rpp_weights_cache_staging_resize_locked(buffer, size)) {
+                return nullptr;
+            }
+            buffer.in_use            = true;
+            cache_state.staging_next = (idx + 1) % cache_state.staging_buffers.size();
+            return buffer.ptr;
+        }
+    }
+
+    return nullptr;
 }
 
 static void ggml_rpp_weights_cache_staging_release_locked(ggml_rpp_weights_cache_state & cache_state, void * ptr) {
-    ggml_rpp_weights_cache_staging_buffer & buffer = cache_state.staging_buffer;
-    if (buffer.ptr == ptr && buffer.in_use) {
-        buffer.in_use = false;
+    for (ggml_rpp_weights_cache_staging_buffer & buffer : cache_state.staging_buffers) {
+        if (buffer.ptr == ptr && buffer.in_use && !buffer.copy_pending) {
+            buffer.in_use = false;
+            return;
+        }
     }
+}
+
+static bool ggml_rpp_weights_cache_staging_mark_copy_locked(
+    ggml_rpp_weights_cache_state & cache_state,
+    void *                         ptr,
+    rtStream_t                    stream) {
+    for (ggml_rpp_weights_cache_staging_buffer & buffer : cache_state.staging_buffers) {
+        if (buffer.ptr != ptr) {
+            continue;
+        }
+        if (buffer.copy_done == nullptr) {
+            RPP_CHECK(rtEventCreateWithFlags(&buffer.copy_done, rtEventDisableTiming));
+        }
+        RPP_CHECK(rtEventRecord(buffer.copy_done, stream));
+        buffer.in_use       = false;
+        buffer.copy_pending = true;
+        return true;
+    }
+    return false;
+}
+
+static bool ggml_rpp_weights_cache_staging_mark_copy(void * ptr, rtStream_t stream) {
+    if (ptr == nullptr) {
+        return false;
+    }
+
+    ggml_rpp_weights_cache_state & cache_state = ggml_rpp_weights_cache_get_state();
+    std::lock_guard<std::mutex>    lock(cache_state.mutex);
+    return ggml_rpp_weights_cache_staging_mark_copy_locked(cache_state, ptr, stream);
 }
 
 static void * ggml_rpp_weights_cache_staging_acquire(size_t size) {
@@ -1090,13 +1114,18 @@ static void ggml_rpp_weights_cache_staging_release(void * ptr) {
 }
 
 static void ggml_rpp_weights_cache_staging_free() {
-    ggml_rpp_weights_cache_state &          cache_state = ggml_rpp_weights_cache_get_state();
-    std::lock_guard<std::mutex>             lock(cache_state.mutex);
-    ggml_rpp_weights_cache_staging_buffer & buffer = cache_state.staging_buffer;
-    if (!buffer.in_use && buffer.ptr != nullptr) {
-        rtFreeHost(buffer.ptr);
-        buffer.ptr      = nullptr;
-        buffer.capacity = 0;
+    ggml_rpp_weights_cache_state & cache_state = ggml_rpp_weights_cache_get_state();
+    std::lock_guard<std::mutex>    lock(cache_state.mutex);
+    for (ggml_rpp_weights_cache_staging_buffer & buffer : cache_state.staging_buffers) {
+        if (buffer.in_use) {
+            continue;
+        }
+        ggml_rpp_weights_cache_staging_wait_locked(buffer);
+        if (buffer.ptr != nullptr) {
+            rtFreeHost(buffer.ptr);
+            buffer.ptr      = nullptr;
+            buffer.capacity = 0;
+        }
     }
     if (cache_state.fd >= 0) {
         close(cache_state.fd);
@@ -1259,9 +1288,9 @@ static bool ggml_rpp_weights_cache_create_parent_dirs(const std::string & file_p
 
     size_t cursor = parent[0] == '/' ? 1 : 0;
     while (cursor <= parent.size()) {
-        const size_t      separator = parent.find('/', cursor);
-        const size_t      length    = separator == std::string::npos ? parent.size() : separator;
-        const std::string dir       = parent.substr(0, length);
+        const size_t separator = parent.find('/', cursor);
+        const size_t length    = separator == std::string::npos ? parent.size() : separator;
+        const std::string dir  = parent.substr(0, length);
         if (!dir.empty() && mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
             GGML_LOG_ERROR("%s: failed to create RPP weight cache directory %s: %s\n", __func__, dir.c_str(),
                            std::strerror(errno));
@@ -1673,8 +1702,9 @@ static void ggml_rpp_weights_cache_store(const ggml_tensor * tensor,
         return;
     }
 
-    const uint64_t payload_offset = (uint64_t) entry_pos + sizeof(entry_header) + (uint64_t) tensor_key.size();
-    cache_state.index[index_key]  = ggml_rpp_weights_cache_index_entry{
+    const uint64_t payload_offset =
+        (uint64_t) entry_pos + sizeof(entry_header) + (uint64_t) tensor_key.size();
+    cache_state.index[index_key] = ggml_rpp_weights_cache_index_entry{
         payload_offset,
         input_size,
         output_size,
@@ -1745,13 +1775,13 @@ static void ggml_backend_rpp_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 /**
  * @brief Set tensor data in a RPP buffer.
  *
- * This function transforms weight data when required, then copies it into the
- * RPP buffer with a synchronous host-to-Device transfer.
+ * This function sets tensor data in a RPP buffer, handling transformations
+ * if needed based on the tensor's type.
  *
  * @param buffer The RPP buffer where the tensor data will be set.
  * @param tensor Pointer to the tensor whose data will be set.
  * @param data Pointer to the source data to be copied into the tensor.
- * @param offset Offset in the destination tensor where copying starts.
+ * @param offset Offset in the source data from where to start copying.
  * @param size Size of the data to be copied, in bytes.
  */
 static void ggml_backend_rpp_buffer_set_tensor(ggml_backend_buffer_t buffer,
@@ -2019,15 +2049,25 @@ static void ggml_backend_rpp_buffer_set_tensor(ggml_backend_buffer_t buffer,
         }
     }
     const void * ddr_data = tmp == nullptr ? data : tmp;
-    RPP_CHECK(rtMemcpy((char *) tensor->data + offset, ddr_data, copy_size, rtMemcpyHostToDevice));
+    RPP_CHECK(
+        rtMemcpyAsync((char *) tensor->data + offset, ddr_data, copy_size, rtMemcpyHostToDevice, ctx->upload_stream));
 
-    if (!cache_hit && cache_eligible && tmp != nullptr && copy_size == cached_copy_size) {
-        ggml_rpp_weights_cache_store(tensor, data, size, tmp, copy_size);
-    }
     if (tmp_from_staging) {
-        ggml_rpp_weights_cache_staging_release(tmp);
-    } else if (tmp != nullptr) {
-        rtFreeHost(tmp);
+        if (!cache_hit && cache_eligible && tmp != nullptr && copy_size == cached_copy_size) {
+            ggml_rpp_weights_cache_store(tensor, data, size, tmp, copy_size);
+        }
+        if (!ggml_rpp_weights_cache_staging_mark_copy(tmp, ctx->upload_stream)) {
+            RPP_CHECK(rtStreamSynchronize(ctx->upload_stream));
+            ggml_rpp_weights_cache_staging_release(tmp);
+        }
+    } else {
+        RPP_CHECK(rtStreamSynchronize(ctx->upload_stream));
+        if (!cache_hit && cache_eligible && tmp != nullptr && copy_size == cached_copy_size) {
+            ggml_rpp_weights_cache_store(tensor, data, size, tmp, copy_size);
+        }
+        if (tmp) {
+            rtFreeHost(tmp);
+        }
     }
 }
 
@@ -2052,8 +2092,7 @@ static void ggml_backend_rpp_buffer_get_tensor(ggml_backend_buffer_t buffer,
     ggml_backend_rpp_buffer_context * ctx = (ggml_backend_rpp_buffer_context *) buffer->context;
 
     ggml_rpp_set_device(ctx->device);
-    RPP_CHECK(
-        rtMemcpyAsync(data, (const char *) tensor->data + offset, size, rtMemcpyDeviceToHost, ctx->upload_stream));
+    RPP_CHECK(rtMemcpyAsync(data, (const char *) tensor->data + offset, size, rtMemcpyDeviceToHost, ctx->upload_stream));
     RPP_CHECK(rtStreamSynchronize(ctx->upload_stream));
 }
 
@@ -2165,7 +2204,6 @@ static bool ggml_backend_buft_is_rpp(ggml_backend_buffer_type_t buft) {
 static ggml_backend_buffer_t ggml_backend_rpp_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     ggml_backend_rpp_buffer_type_context * buft_ctx = (ggml_backend_rpp_buffer_type_context *) buft->context;
 
-    ggml_rpp_runtime_acquire();
     ggml_rpp_set_device(buft_ctx->device);
 
     void *    dev_ptr;
@@ -2175,7 +2213,6 @@ static ggml_backend_buffer_t ggml_backend_rpp_buffer_type_alloc_buffer(ggml_back
         (void) rtGetLastError();
         GGML_LOG_ERROR("%s: allocating %.2f MiB on device %d: rppMalloc failed: %s\n", __func__, size / 1024.0 / 1024.0,
                        buft_ctx->device, rtGetErrorString(err));
-        ggml_rpp_runtime_release(false);
         return nullptr;
     }
 
@@ -2357,10 +2394,8 @@ struct ggml_backend_rpp_split_buffer_context {
 };
 
 static void ggml_backend_rpp_split_buffer_free_buffer(ggml_backend_buffer_t buffer) {
-    const bool is_weight = ggml_backend_buffer_get_usage(buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
     ggml_backend_rpp_split_buffer_context * ctx = (ggml_backend_rpp_split_buffer_context *) buffer->context;
     delete ctx;
-    ggml_rpp_runtime_release(is_weight);
 }
 
 static void * ggml_backend_rpp_split_buffer_get_base(ggml_backend_buffer_t buffer) {
@@ -2548,7 +2583,6 @@ static ggml_backend_buffer_t ggml_backend_rpp_split_buffer_type_alloc_buffer(ggm
     // instead, we allocate them for each tensor separately in init_tensor
     // however, the size still represents the maximum cumulative size of all the device buffers after the tensors are allocated,
     // as returned by get_alloc_size. this limit is enforced during tensor allocation by ggml-alloc, so it must be correct.
-    ggml_rpp_runtime_acquire();
     ggml_backend_rpp_split_buffer_context * ctx = new ggml_backend_rpp_split_buffer_context();
 
     return ggml_backend_buffer_init(buft, ggml_backend_rpp_split_buffer_interface, ctx, size);
@@ -2669,9 +2703,7 @@ static bool ggml_backend_buft_is_rpp_host(ggml_backend_buffer_type_t buft) {
 }
 
 static void ggml_backend_rpp_host_buffer_free_buffer(ggml_backend_buffer_t buffer) {
-    const bool is_weight = ggml_backend_buffer_get_usage(buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
     RPP_CHECK(rtFreeHost(buffer->context));
-    ggml_rpp_runtime_release(is_weight);
 }
 
 static void * ggml_rpp_host_malloc(size_t size) {
@@ -2701,11 +2733,9 @@ static void * ggml_rpp_host_malloc(size_t size) {
  */
 static ggml_backend_buffer_t ggml_backend_rpp_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft,
                                                                             size_t                     size) {
-    ggml_rpp_runtime_acquire();
     void * ptr = ggml_rpp_host_malloc(size);
 
     if (ptr == nullptr) {
-        ggml_rpp_runtime_release(false);
         // fallback to cpu buffer
         return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
     }
@@ -3070,7 +3100,6 @@ static void ggml_backend_rpp_free(ggml_backend_t backend) {
     rpp_ctx->release_resources();
     delete rpp_ctx;
     delete backend;
-    ggml_rpp_runtime_release(true);
 }
 
 /**
@@ -3509,10 +3538,10 @@ static enum ggml_status ggml_rpp_finish_aborted_compute(ggml_backend_rpp_context
 }
 
 static enum ggml_status evaluate_and_capture_rpp_graph(ggml_backend_rpp_context * rpp_ctx,
-                                                       ggml_cgraph *              cgraph,
-                                                       bool &                     graph_evaluated_or_captured,
-                                                       bool &                     use_rpp_graph,
-                                                       bool &                     rpp_graph_update_required) {
+                                                        ggml_cgraph *              cgraph,
+                                                        bool &                     graph_evaluated_or_captured,
+                                                        bool &                     use_rpp_graph,
+                                                        bool &                     rpp_graph_update_required) {
     ggml_rpp_trace_id_current = rpp_ctx->trace_id;
     TRACE_SCOPE_GUARD(rpp_ctx->trace_id, "evaluate_and_capture_rpp_graph");
     // flag used to determine whether it is an integrated_gpu
@@ -3713,17 +3742,18 @@ static enum ggml_status evaluate_and_capture_rpp_graph(ggml_backend_rpp_context 
             }
 
             if (!disable_graph_capture) {
-                int        pending_kernel_graph_idx = -1;
-                const auto first_rpp_node           = rpp_ctx->cur_rpp_graph->rpp_in_use_nodes[0];
+                int       pending_kernel_graph_idx = -1;
+                const auto first_rpp_node          = rpp_ctx->cur_rpp_graph->rpp_in_use_nodes[0];
                 GGML_ASSERT(first_rpp_node && first_rpp_node->cur_ggml_tensor);
                 GGML_ASSERT(first_rpp_node->seq_len_index < GGML_MAX_DIMS);
-                const int64_t actual_seq_len    = first_rpp_node->cur_ggml_tensor->ne[first_rpp_node->seq_len_index];
-                const bool    is_prefill        = first_rpp_node->n_ubatch > 1 || actual_seq_len > 1;
-                const int     u_nodes           = rpp_ctx->cur_rpp_graph->rpp_in_use_nodes.size();
+                const int64_t actual_seq_len =
+                    first_rpp_node->cur_ggml_tensor->ne[first_rpp_node->seq_len_index];
+                const bool is_prefill = first_rpp_node->n_ubatch > 1 || actual_seq_len > 1;
+                const int u_nodes                  = rpp_ctx->cur_rpp_graph->rpp_in_use_nodes.size();
                 // Encode the number of nodes and execution stages without collision to avoid prefill/decode sharing the parent graph when UBTECH is closed.
-                const int     graph_index       = u_nodes * 2 + (is_prefill ? 1 : 0);
-                auto &        rpp_kernel_graphs = rpp_ctx->cur_rpp_graph->rpp_kernel_graphs;
-                auto &        rpp_in_use_kernel_graphs = rpp_ctx->cur_rpp_graph->rpp_in_use_kernel_graphs;
+                const int graph_index              = u_nodes * 2 + (is_prefill ? 1 : 0);
+                auto &    rpp_kernel_graphs        = rpp_ctx->cur_rpp_graph->rpp_kernel_graphs;
+                auto &    rpp_in_use_kernel_graphs = rpp_ctx->cur_rpp_graph->rpp_in_use_kernel_graphs;
                 if (rpp_kernel_graphs.count(graph_index)) {
                     TRACE_SCOPE_GUARD(rpp_ctx->trace_id, "update_kernel_graphs");
                     auto & cur_kernel_graphs = rpp_kernel_graphs[graph_index];
@@ -3914,8 +3944,8 @@ static enum ggml_status ggml_backend_rpp_graph_compute(ggml_backend_t backend, g
     bool rpp_graph_update_required   = is_rpp_graph_update_required(rpp_ctx, cgraph);
     bool use_rpp_graph               = true;
     bool graph_evaluated_or_captured = false;
-    return evaluate_and_capture_rpp_graph(rpp_ctx, cgraph, graph_evaluated_or_captured, use_rpp_graph,
-                                          rpp_graph_update_required);
+    return evaluate_and_capture_rpp_graph(
+        rpp_ctx, cgraph, graph_evaluated_or_captured, use_rpp_graph, rpp_graph_update_required);
 }
 
 /**
@@ -4503,7 +4533,7 @@ static ggml_backend_feature * ggml_backend_rpp_get_features(ggml_backend_reg_t r
     GGML_UNUSED(reg);
 }
 
-static void ggml_backend_rpp_set_abort_callback(ggml_backend_t      backend,
+static void ggml_backend_rpp_set_abort_callback(ggml_backend_t       backend,
                                                 ggml_abort_callback abort_callback,
                                                 void *              abort_callback_data) {
     GGML_ASSERT(backend != nullptr && ggml_backend_is_rpp(backend));
@@ -4619,12 +4649,9 @@ ggml_backend_t ggml_backend_rpp_init(int device, const char * params) {
         GGML_LOG_ERROR("%s: invalid device %d\n", __func__, device);
         return nullptr;
     }
-
-    ggml_rpp_runtime_acquire();
     ggml_backend_rpp_context * ctx = new ggml_backend_rpp_context(device, params);
     if (ctx == nullptr) {
         GGML_LOG_ERROR("%s: failed to allocate context\n", __func__);
-        ggml_rpp_runtime_release(true);
         return nullptr;
     }
 

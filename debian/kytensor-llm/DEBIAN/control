@@ -2,7 +2,7 @@ Package: kytensor-llm
 Version: 2.0.0-ok19k1.5
 Architecture: amd64
 Maintainer: kylin <liuyihu@kylinos.cn>
-Installed-Size: 25730
+Installed-Size: 133284
 Conflicts: llamacpp
 Breaks: llamacpp
 Replaces: llamacpp

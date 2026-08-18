@@ -150,11 +150,8 @@ static void rpp_tanh_build(rpp_kernel_context & ctx,
     }
 
     rppStreamEndCapture(ctx.kernelStream, &ctx.graph);
-    const std::string graph_key =
-        rpp_join_function_name_and_args(__func__, C, H, W, in_bytes_per_element, out_bytes_per_element,
-                                        has_mid_workspace);
-    if (rpp_graph_instantiate(ctx.graphexec, ctx.graph, graph_key.c_str(), is_instantial) != RPP_SUCCESS) {
-        throw std::runtime_error("rpp_graph_instantiate failed.");
+    if (is_instantial) {
+        rppGraphInstantiate(&ctx.graphexec, ctx.graph, NULL, NULL, 0);
     }
 }
 

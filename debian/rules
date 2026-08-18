@@ -7,11 +7,11 @@ DEB_HOST_ARCH := $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_MULTIARCH := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 ifeq ($(DEB_HOST_ARCH),amd64)
-    HIP_ENABLE=OFF
-    SYCL_ENABLE=OFF
+    HIP_ENABLE=ON
+    SYCL_ENABLE=ON
     BACKEND_NATIVE = OFF
     CPU_ALL_VARIANTS=ON
-	DTK_ENABLE=OFF
+	DTK_ENABLE=ON
     CXXFLAGS = "-I/opt/system/resource/xpu/houmo"
 else
     HIP_ENABLE=OFF
@@ -69,7 +69,7 @@ override_dh_auto_configure:
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DCMAKE_INSTALL_LIBDIR=lib/$(DEB_HOST_MULTIARCH) \
 		-DCMAKE_BUILD_TYPE=Release \
-		-DGGML_CUDA=OFF \
+		-DGGML_CUDA=ON \
 		-DGGML_HIP=$(HIP_ENABLE) \
 		-DGGML_SYCL=$(SYCL_ENABLE) \
 		-DGGML_SYCL_DNN=$(SYCL_ENABLE) \
@@ -77,16 +77,14 @@ override_dh_auto_configure:
 		-DGGML_NATIVE=$(BACKEND_NATIVE) \
 		-DGGML_AVX512=ON \
 		-DGGML_CPU_ALL_VARIANTS=$(CPU_ALL_VARIANTS) \
-		-DGGML_PONN=OFF \
+		-DGGML_PONN=ON \
 		-DGGML_RPP=ON \
 		-DGGML_RPP_USE_DFS=ON \
-		-DLLAMA_BUILD_TESTS=OFF \
-		-DGGML_BUILD_TESTS=OFF \
 		$(DCU_CONFIG) \
-		-DGGML_VULKAN=OFF
+		-DGGML_VULKAN=ON
 
 override_dh_auto_build:
-	cd build && make -j8
+	cd build && make -j$(nproc)
 
 override_dh_auto_test:
 	true
