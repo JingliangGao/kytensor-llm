@@ -466,6 +466,7 @@ ggml_add_backend(Hexagon)
 ggml_add_backend(ZenDNN)
 ggml_add_backend(OPENVINO)
 ggml_add_backend(RPP)
+ggml_add_backend(DTK)
 
 # HoumoNPU backend - static linkage (always included)
 add_subdirectory(ggml-houmonpu)

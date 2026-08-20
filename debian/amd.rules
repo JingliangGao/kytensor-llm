@@ -7,11 +7,11 @@ DEB_HOST_ARCH := $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_MULTIARCH := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 ifeq ($(DEB_HOST_ARCH),amd64)
-    HIP_ENABLE=OFF
+    HIP_ENABLE=ON
     SYCL_ENABLE=OFF
     BACKEND_NATIVE = OFF
     CPU_ALL_VARIANTS=ON
-	DTK_ENABLE=ON
+	DTK_ENABLE=OFF
     CXXFLAGS = "-I/opt/system/resource/xpu/houmo"
 else
     HIP_ENABLE=OFF
@@ -34,11 +34,11 @@ ifeq ($(DTK_ENABLE),ON)
 		$(error DTK_ENABLE is ON but DTK_DIR path '$(DTK_DIR)' does not exist. Please set DTK_DIR to a valid DTK installation path.)
 	endif
 
-	DCU_CONFIG=-DAMDGPU_TARGETS=gfx928 \
+	DCU_CONFIG=-DAMDGPU_TARGETS=gfx1201 \
     	-DGGML_CUDA_FORCE_MMQ=ON \
     	-DGGML_HIP_MMQ_MFMA=OFF \
     	-DGGML_HIP_GRAPHS=OFF \
-    	-DLLAMA_DTK=$(DTK_ENABLE) \
+    	-DLLAMA_HIP_DTK=$(DTK_ENABLE) \
     	-DDTK_PATH=$(DTK_DIR) \
     	-DLLAMA_BUILD_TESTS=OFF \
     	-DGGML_BUILD_TESTS=OFF

@@ -183,7 +183,7 @@ llama_option_depr(WARNING     LLAMA_SYCL                GGML_SYCL)
 llama_option_depr(WARNING     LLAMA_SYCL_F16            GGML_SYCL_F16)
 llama_option_depr(WARNING     LLAMA_CANN                GGML_CANN)
 llama_option_depr(WARNING     LLAMA_PONN                GGML_PONN)
-llama_option_depr(WARNING     LLAMA_HIP_DTK             GGML_HIP_DTK)
+llama_option_depr(WARNING     LLAMA_DTK                 GGML_DTK)
 llama_option_depr(WARNING     LLAMA_CURL)
 
 include("cmake/license.cmake")

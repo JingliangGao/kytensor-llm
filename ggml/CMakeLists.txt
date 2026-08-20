@@ -219,7 +219,6 @@ option(GGML_HIP_NO_VMM                      "ggml: do not try to use HIP VMM"   
 option(GGML_HIP_ROCWMMA_FATTN               "ggml: enable rocWMMA for FlashAttention"         OFF)
 option(GGML_HIP_MMQ_MFMA                    "ggml: enable MFMA MMA for CDNA in MMQ"           ON)
 option(GGML_HIP_EXPORT_METRICS              "ggml: enable kernel perf metrics output"         OFF)
-option(GGML_HIP_DTK                         "ggml：enable Hygon dtk compatibility mode"       OFF)
 option(GGML_MUSA_GRAPHS                     "ggml: use MUSA graph, experimental, unstable"    OFF)
 option(GGML_MUSA_MUDNN_COPY                 "ggml: enable muDNN for accelerated copy"         OFF)
 option(GGML_VULKAN                          "ggml: use Vulkan"                                OFF)
@@ -263,6 +262,7 @@ set   (GGML_SYCL_DEVICE_ARCH "" CACHE STRING
 option(GGML_OPENVINO                        "ggml: use OPENVINO"                              OFF)
 
 option(GGML_RPP                             "ggml: use rpp"                                   OFF)
+option(GGML_DTK                             "ggml: enable Hygon dtk compatibility mode"       OFF)
 
 option(GGML_OPENCL                          "ggml: use OpenCL"                                OFF)
 option(GGML_OPENCL_PROFILING                "ggml: use OpenCL profiling (increases overhead)" OFF)
