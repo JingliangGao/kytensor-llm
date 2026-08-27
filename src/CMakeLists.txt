@@ -8,6 +8,19 @@ llama_add_compile_flags()
 
 file(GLOB LLAMA_MODELS_SOURCES "models/*.cpp")
 
+# houmo sources are only compiled when GGML_HOUMO is ON
+set(GGML_HOUMO_SOURCES "")
+if (GGML_HOUMO)
+    set(GGML_HOUMO_SOURCES
+        houmo/houmo-llmodel.cpp
+        houmo/houmo-gptoss.cpp
+        houmo/houmo-qwenllm.cpp
+        houmo/houmo-qwen35llm.cpp
+        houmo/houmo-vllmodel.cpp
+        houmo/houmo-embed.cpp
+        houmo/houmo-embedding_layer.cpp)
+endif()
+
 add_library(llama
             ../include/llama.h
             llama.cpp
@@ -38,13 +51,7 @@ add_library(llama
             unicode-data.cpp
             unicode.cpp
             unicode.h
-            houmo/houmo-llmodel.cpp
-            houmo/houmo-gptoss.cpp
-            houmo/houmo-qwenllm.cpp
-            houmo/houmo-qwen35llm.cpp
-            houmo/houmo-vllmodel.cpp
-            houmo/houmo-embed.cpp
-            houmo/houmo-embedding_layer.cpp
+            ${GGML_HOUMO_SOURCES}
             ${LLAMA_MODELS_SOURCES}
             )
 
@@ -53,8 +60,12 @@ add_library(llama
 #     SOVERSION 0
 # )
 
-target_include_directories(llama PRIVATE . houmo)
-target_include_directories(llama PUBLIC ../include ../vendor ../common ${HOUMO_TCIM_RUNTIME_PATH}/include)
+target_include_directories(llama PRIVATE .)
+target_include_directories(llama PUBLIC ../include ../vendor ../common)
+if (GGML_HOUMO)
+    target_include_directories(llama PRIVATE houmo)
+    target_include_directories(llama PUBLIC ${HOUMO_TCIM_RUNTIME_PATH}/include)
+endif()
 target_compile_features   (llama PUBLIC cxx_std_17) # don't bump
 
 target_link_libraries(llama PUBLIC ggml ${HOUMO_RUNTIME_LIBRARIES})

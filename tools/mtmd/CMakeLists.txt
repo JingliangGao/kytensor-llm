@@ -2,6 +2,14 @@
 
 find_package(Threads REQUIRED)
 
+# houmo-vision is only compiled when GGML_HOUMO is ON
+set(MTMD_HOUMO_SOURCES "")
+if (GGML_HOUMO)
+    set(MTMD_HOUMO_SOURCES
+        houmo-vision.cpp
+        houmo-vision.h)
+endif()
+
 add_library(mtmd
             mtmd.cpp
             mtmd-audio.cpp
@@ -41,8 +49,7 @@ add_library(mtmd
             models/mobilenetv5.cpp
             models/youtuvl.cpp
             models/yasa2.cpp
-            houmo-vision.cpp
-            houmo-vision.h
+            ${MTMD_HOUMO_SOURCES}
             )
 
 # set_target_properties(mtmd PROPERTIES

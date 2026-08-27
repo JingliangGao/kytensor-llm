@@ -169,12 +169,18 @@ static int llama_model_load(struct gguf_context * metadata, llama_model_set_tens
         }
         model.hparams.is_hmm = model.gguf_kv.count("is_hmm") > 0;
         LLAMA_LOG_INFO("%s:%d: loading hmmodes %d\n", __func__, __LINE__, model.hparams.is_hmm);
+#ifdef GGML_HOUMO
         void * decrypt_model_addr = gguf_get_model_addr(ml.metadata);
         if (model.hparams.is_hmm) {
             int ret = model.load_hmmodels(ml, params.progress_callback, params.progress_callback_user_data);
             free(decrypt_model_addr);
             return ret;
         }
+#else
+        if (model.hparams.is_hmm) {
+            throw std::runtime_error("this model requires the houmo (XH2) backend, which is disabled in this build");
+        }
+#endif
 
         if (!model.load_tensors(ml)) {
             return -2;

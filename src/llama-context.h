@@ -194,10 +194,12 @@ struct llama_context {
             int64_t                          t_loop_start);
 
 private:
+#ifdef GGML_HOUMO
     // houmo patch for decoding
     void houmo_init(int32_t n_seq_max);
     int houmo_decode(const llama_batch &batch);
     int houmo_embedding(const llama_batch &batch);
+#endif
     //
     // output
     //

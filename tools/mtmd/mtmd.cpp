@@ -4,7 +4,9 @@
 #include "mtmd-audio.h"
 #include "mtmd-image.h"
 #include "debug/mtmd-debug.h"
+#ifdef GGML_HOUMO
 #include "houmo-vision.h"
+#endif
 #include "llama.h"
 
 // fix problem with std::min and std::max
@@ -138,7 +140,9 @@ mtmd_context_params mtmd_context_params_default() {
 }
 
 struct mtmd_context {
+#ifdef GGML_HOUMO
     std::unique_ptr<HoumoVision> hm_vision; // for HMM-based vision models
+#endif
     struct clip_ctx * ctx_v; // vision
     struct clip_ctx * ctx_a; // audio
     const struct llama_model * text_model;
@@ -230,6 +234,7 @@ struct mtmd_context {
         }
 
         if (clip_is_hmm(ctx_v)) {
+#ifdef GGML_HOUMO
             std::vector<int> device_ids;
             if (ctx_params.devices != nullptr) {
                 LOG_INF("device is not null...");
@@ -250,6 +255,10 @@ struct mtmd_context {
             if (!hm_vision->init(mmproj_fname, device_ids))
                 throw std::runtime_error(string_format(
                     "Failed to load HMM model from %s\n", mmproj_fname));
+#else
+            throw std::runtime_error(string_format(
+                "HMM vision model requires the houmo (XH2) backend, which is disabled in this build (model: %s)\n", mmproj_fname));
+#endif
         }
 
         // if both vision and audio mmproj are present, we need to validate their n_embd
@@ -771,12 +780,15 @@ struct mtmd_tokenizer {
             // preprocess image
             clip_image_f32_batch batch_f32;
 
+#ifdef GGML_HOUMO
             if (clip_is_hmm(ctx->ctx_v) && !clip_is_minicpmv(ctx->ctx_v)) {
                 LOG_DBG("%s: image resize to %d x %d\n", __func__, img_u8->nx, img_u8->ny);
                 clip_image_f32_ptr img_f32(clip_image_f32_init());
                 ctx->hm_vision->image_resize(img_u8, img_f32);
                 batch_f32.entries.push_back(std::move(img_f32));
-            } else {
+            } else
+#endif
+            {
                 bool ok = ctx->image_preproc->preprocess(*img_u8, batch_f32);
                 if (!ok) {
                     LOG_ERR("Unable to preprocess image\n");
@@ -1094,10 +1106,15 @@ int32_t mtmd_encode(mtmd_context * ctx, const mtmd_image_tokens * image_tokens) 
         }
     } else {
         if (clip_is_hmm(ctx->ctx_v)) {
+#ifdef GGML_HOUMO
             // FIXME: 只处理第一张图片
             const clip_image_f32_ptr & imgs = image_tokens->batch_f32.entries[0];
             return ctx->hm_vision->encoding(imgs->buf, ctx->image_embd_v) ? 0
                                                                           : 1;
+#else
+            LOG_ERR("%s: HMM vision model requires the houmo (XH2) backend, which is disabled in this build\n", __func__);
+            return 1;
+#endif
         }
         ok = clip_image_batch_encode(
             ctx_clip,
@@ -1549,17 +1566,23 @@ void mtmd_debug_preprocess_audio(mtmd_context * ctx, const std::vector<float> & 
 }
 
 int32_t mtmd_vision_height(const mtmd_context *ctx) {
+#ifdef GGML_HOUMO
     if (ctx->hm_vision) {
         return ctx->hm_vision->image_height();
-    } else {
-        return 0;
     }
+#else
+    GGML_UNUSED(ctx);
+#endif
+    return 0;
 }
 
 int32_t mtmd_vision_width(const mtmd_context *ctx) {
+#ifdef GGML_HOUMO
     if (ctx->hm_vision) {
         return ctx->hm_vision->image_width();
-    } else {
-        return 0;
     }
+#else
+    GGML_UNUSED(ctx);
+#endif
+    return 0;
 }

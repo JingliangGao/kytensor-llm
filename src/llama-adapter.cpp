@@ -3,7 +3,9 @@
 #include "llama-impl.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
+#ifdef GGML_HOUMO
 #include "houmo-llmodel.h"
+#endif
 #include <map>
 #include <cassert>
 #include <cerrno>
@@ -154,10 +156,12 @@ static void llama_adapter_lora_init_impl(
     llama_adapter_lora & adapter,
     const enum gguf_decrypt_type decrypt_type) {
     LLAMA_LOG_INFO("%s: loading lora adapter from '%s' ...\n", __func__, path_lora);
+#ifdef GGML_HOUMO
     if (model.hm_llmodel != nullptr) {
         model.hm_llmodel->lora_init(std::string(path_lora), &adapter);
         return;
     }
+#endif
     ggml_context * ctx_init;
     gguf_init_params meta_gguf_params = {
         /* .no_alloc = */ true,

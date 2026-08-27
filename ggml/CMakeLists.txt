@@ -262,7 +262,8 @@ set   (GGML_SYCL_DEVICE_ARCH "" CACHE STRING
 option(GGML_OPENVINO                        "ggml: use OPENVINO"                              OFF)
 
 option(GGML_RPP                             "ggml: use rpp"                                   OFF)
-option(GGML_DTK                             "ggml: enable Hygon dtk compatibility mode"       OFF)
+
+option(GGML_DTK                             "ggml：enable Hygon dtk compatibility mode"       OFF)
 
 option(GGML_OPENCL                          "ggml: use OpenCL"                                OFF)
 option(GGML_OPENCL_PROFILING                "ggml: use OpenCL profiling (increases overhead)" OFF)
@@ -274,7 +275,6 @@ set   (GGML_OPENCL_TARGET_VERSION "300" CACHE STRING
 option(GGML_HEXAGON                         "ggml: enable Hexagon backend"                    OFF)
 set(GGML_HEXAGON_FP32_QUANTIZE_GROUP_SIZE 128 CACHE STRING "ggml: quantize group size (32, 64, or 128)")
 
-message("[INFO] GGML_HIP_DTK : ${GGML_HIP_DTK} .")
 
 
 # toolchain for vulkan-shaders-gen

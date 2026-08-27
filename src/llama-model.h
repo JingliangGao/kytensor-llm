@@ -17,7 +17,9 @@
 struct llama_cparams;
 struct llama_ubatch;
 struct llama_model_loader;
+#ifdef GGML_HOUMO
 class  HouMoLLModel;
+#endif
 // available models
 enum llm_type {
     LLM_TYPE_UNKNOWN,
@@ -517,7 +519,9 @@ struct llama_model {
 
     llama_hparams hparams = {};
     llama_vocab   vocab;
+#ifdef GGML_HOUMO
     std::shared_ptr<HouMoLLModel> hm_llmodel = nullptr;
+#endif
     // for classifier models
     std::vector<std::string> classifier_labels;
 
@@ -585,11 +589,13 @@ struct llama_model {
     void load_hparams(llama_model_loader & ml);
     void load_vocab  (llama_model_loader & ml);
     bool load_tensors(llama_model_loader & ml); // returns false if cancelled by progress_callback
+#ifdef GGML_HOUMO
     // TODO: @guoxing.xu check again.
     int load_hmmodels(
         llama_model_loader & ml,
         llama_progress_callback progress_callback,
         void * progress_callback_user_data);
+#endif
 
     std::string arch_name() const;
     std::string type_name() const;

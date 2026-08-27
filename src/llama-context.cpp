@@ -10,14 +10,17 @@
 #include "llama-model.h"
 #include "llama-ext.h"
 #include "llama.h"
+#ifdef GGML_HOUMO
 #include "houmo-memory.h"
 #include "houmo-llmodel.h"
+#endif
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 
+#ifdef GGML_HOUMO
 void llama_context::houmo_init(int32_t seq_max) {
     std::shared_ptr<HouMoLLModel> hm_llmodel = model.hm_llmodel;
     memory = std::make_unique<houmo_memory_i>();
@@ -49,6 +52,7 @@ void llama_context::houmo_init(int32_t seq_max) {
                 ggml_backend_buffer_get_size(buf_output.get()) / 1024.0 / 1024.0);
     }
 }
+#endif // GGML_HOUMO
 
 //
 // llama_context
@@ -233,7 +237,9 @@ llama_context::llama_context(
     }
 
     if (hparams.is_hmm) {
+#ifdef GGML_HOUMO
         houmo_init(cparams.n_seq_max);
+#endif
     }
 
     LLAMA_LOG_INFO("%s: n_seq_max     = %u\n",   __func__, cparams.n_seq_max);
@@ -1199,9 +1205,11 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 void llama_context::set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales) {
     LLAMA_LOG_DEBUG("%s: adapters = %p\n", __func__, (void *) adapters);
     if (model.hparams.is_hmm) {
+#ifdef GGML_HOUMO
         for (size_t i = 0; i < n_adapters; i++) {
             model.hm_llmodel->lora_set_scale(adapters[i], scales[i]);
         }
+#endif
     }
 
     if (adapters_lora_are_same(adapters, n_adapters, scales)) {
@@ -1533,6 +1541,7 @@ static std::string common_token_to_piece(const struct llama_vocab * vocab, llama
     return piece;
 }
 
+#ifdef GGML_HOUMO
 int llama_context::houmo_decode(const llama_batch &batch) {
     int ret = 0;
     std::shared_ptr<HouMoLLModel> hm_llmodel = model.hm_llmodel;
@@ -1749,6 +1758,7 @@ int llama_context::houmo_embedding(const llama_batch &batch) {
     }
     return 0;
 }
+#endif // GGML_HOUMO
 static void copy_tensor_async_ints(
     const std::map<llama_seq_id, ggml_tensor*> & tensor_map,
     const buffer_view<llama_token> & sampled,
@@ -1903,10 +1913,12 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
     }
     if (model.hparams.is_hmm) {
+#ifdef GGML_HOUMO
         if (cparams.embeddings && model.hm_llmodel->is_embedding())
             return houmo_embedding(batch_inp);
         else
             return houmo_decode(batch_inp);
+#endif
     }
 
     if (!balloc->init(batch_inp, vocab, memory.get(), n_embd, n_seq_max, output_all)) {

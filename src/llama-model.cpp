@@ -15,7 +15,9 @@
 #include "llama-memory-recurrent.h"
 
 #include "models/models.h"
+#ifdef GGML_HOUMO
 #include "houmo-llmodel.h"
+#endif
 #include "ggml.h"
 #include "ggml-cpp.h"
 
@@ -8065,6 +8067,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     return true;
 }
 
+#ifdef GGML_HOUMO
 int llama_model::load_hmmodels(
         llama_model_loader & ml,
         llama_progress_callback progress_callback,
@@ -8081,6 +8084,7 @@ int llama_model::load_hmmodels(
     }
     return hm_llmodel->houmo_load(ml, device_ids, progress_callback, progress_callback_user_data);
 }
+#endif
 
 std::string llama_model::arch_name() const {
     return llm_arch_name(arch);
