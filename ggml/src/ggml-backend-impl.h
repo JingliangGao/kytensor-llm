@@ -3,6 +3,9 @@
 // ggml-backend internal header
 
 #include "ggml-backend.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 
 #ifdef  __cplusplus
 extern "C" {
@@ -144,6 +147,11 @@ extern "C" {
         struct ggml_backend_i iface;
         ggml_backend_dev_t device;
         void * context;
+
+#ifdef LLAMA_USE_PROFILER
+        // Optional profiler (set by backend during init, NULL if not profiling)
+        ggml_backend_profiler_t profiler;
+#endif
     };
 
     struct ggml_backend_event {

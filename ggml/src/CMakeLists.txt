@@ -196,11 +196,13 @@ add_library(ggml-base
 	    ../include/ggml-backend-devs.h
             ../include/ggml-cpp.h
             ../include/ggml-opt.h
+            ../include/ggml-profiler.h
             ../include/gguf.h
             ggml.c
             ggml.cpp
             ggml-alloc.c
             ggml-backend.cpp
+            ggml-profiler.cpp
 	    ggml-backend-devs.cpp
             ggml-backend-meta.cpp
             ggml-opt.cpp

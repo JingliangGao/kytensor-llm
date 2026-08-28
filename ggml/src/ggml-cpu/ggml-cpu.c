@@ -6,6 +6,9 @@
 #include "traits.h"
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 #include "quants.h"
 #include "ggml-threading.h"
 #include "unary-ops.h"
@@ -2983,28 +2986,70 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
     GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
 #endif
 
-    for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
-        struct ggml_tensor * node = cgraph->nodes[node_n];
+#ifdef LLAMA_USE_PROFILER
+    // Profiling state
+    if (cplan->profiling_context != NULL && cplan->profiling_record_fn != NULL) {
+        for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
+            struct ggml_tensor * node = cgraph->nodes[node_n];
 
-        if (ggml_op_is_empty(node->op)) {
-            // skip NOPs
-            continue;
+            if (ggml_op_is_empty(node->op)) {
+                continue;
+            }
+
+            if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+                continue;
+            }
+
+            // Only thread 0 records timing (after barrier = total node time)
+            uint64_t t_start = 0;
+            if (state->ith == 0) {
+                t_start = ggml_profiler_time_ns();
+            }
+
+            ggml_compute_forward(&params, node);
+
+            if (node_n + 1 < cgraph->n_nodes) {
+                ggml_barrier(state->threadpool);
+            }
+
+            if (state->ith == 0) {
+                uint64_t t_end = ggml_profiler_time_ns();
+                cplan->profiling_record_fn(cplan->profiling_context, 0 /* GGML_PROFILE_EVENT_OP */,
+                                           ggml_op_name(node->op), -1, t_start, t_end, ggml_nbytes(node), NULL,
+                                           node);
+            }
+
+            if (state->ith == 0 && cplan->abort_callback && cplan->abort_callback(cplan->abort_callback_data)) {
+                atomic_store_explicit(&tp->abort, node_n + 1, memory_order_relaxed);
+                tp->ec = GGML_STATUS_ABORTED;
+            }
         }
+    } else
+#endif // LLAMA_USE_PROFILER
+    {
+        for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
+            struct ggml_tensor * node = cgraph->nodes[node_n];
 
-        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
-            continue;
-        }
+            if (ggml_op_is_empty(node->op)) {
+                // skip NOPs
+                continue;
+            }
 
-        ggml_compute_forward(&params, node);
+            if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+                continue;
+            }
 
-        if (state->ith == 0 && cplan->abort_callback &&
-                cplan->abort_callback(cplan->abort_callback_data)) {
-            atomic_store_explicit(&tp->abort, node_n + 1, memory_order_relaxed);
-            tp->ec    = GGML_STATUS_ABORTED;
-        }
+            ggml_compute_forward(&params, node);
 
-        if (node_n + 1 < cgraph->n_nodes) {
-            ggml_barrier(state->threadpool);
+            if (state->ith == 0 && cplan->abort_callback &&
+                    cplan->abort_callback(cplan->abort_callback_data)) {
+                atomic_store_explicit(&tp->abort, node_n + 1, memory_order_relaxed);
+                tp->ec    = GGML_STATUS_ABORTED;
+            }
+
+            if (node_n + 1 < cgraph->n_nodes) {
+                ggml_barrier(state->threadpool);
+            }
         }
     }
 

@@ -67,6 +67,11 @@ endif()
 
 option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
 
+option(LLAMA_USE_PROFILER "llama: enable cross-backend profiler" ON)
+if (LLAMA_USE_PROFILER)
+    add_compile_definitions(LLAMA_USE_PROFILER)
+endif()
+
 if (WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()

@@ -1,6 +1,10 @@
+#include "ggml.h"
 #include "ggml-impl.h"
 #include "ggml-blas.h"
 #include "ggml-backend-impl.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 
 #include <future>
 #include <vector>
@@ -24,6 +28,13 @@ struct ggml_backend_blas_context {
     size_t work_size = 0;
 #ifndef GGML_USE_OPENMP
     std::vector<std::future<void>> tasks;
+#endif
+
+#ifdef LLAMA_USE_PROFILER
+    // Profiling state
+    bool                             profiling_enabled  = false;
+    int                              profiling_split_id = -1;
+    std::vector<ggml_profile_record> profiling_records;
 #endif
 };
 
@@ -232,6 +243,20 @@ static enum ggml_status ggml_backend_blas_graph_compute(ggml_backend_t backend, 
             continue;
         }
 
+        // Skip view/identity ops
+        if (node->op == GGML_OP_NONE || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_VIEW ||
+            node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE) {
+            continue;
+        }
+
+#ifdef LLAMA_USE_PROFILER
+        // Profiling: time this operation
+        uint64_t t_start = 0;
+        if (ctx->profiling_enabled) {
+            t_start = ggml_profiler_time_ns();
+        }
+#endif
+
         switch (node->op) {
             case GGML_OP_MUL_MAT:
                 ggml_backend_blas_mul_mat(ctx, node);
@@ -241,16 +266,26 @@ static enum ggml_status ggml_backend_blas_graph_compute(ggml_backend_t backend, 
                 ggml_backend_blas_out_prod(ctx, node);
                 break;
 
-            case GGML_OP_NONE:
-            case GGML_OP_RESHAPE:
-            case GGML_OP_VIEW:
-            case GGML_OP_PERMUTE:
-            case GGML_OP_TRANSPOSE:
-                break;
-
             default:
                 GGML_ABORT("%s: unsupported op %s\n", __func__, ggml_op_desc(node));
         }
+
+#ifdef LLAMA_USE_PROFILER
+        if (ctx->profiling_enabled) {
+            uint64_t            t_end = ggml_profiler_time_ns();
+            ggml_profile_record rec;
+            rec.type       = GGML_PROFILE_EVENT_OP;
+            rec.name       = ggml_op_name(node->op);
+            rec.backend_id = 0;
+            rec.split_id   = ctx->profiling_split_id;
+            rec.start_ns   = t_start;
+            rec.end_ns     = t_end;
+            rec.bytes      = ggml_nbytes(node);
+            rec.extra      = NULL;
+            ggml_profile_record_from_tensor(&rec, node);
+            ctx->profiling_records.push_back(rec);
+        }
+#endif
     }
 
     return GGML_STATUS_SUCCESS;
@@ -286,11 +321,54 @@ ggml_backend_t ggml_backend_blas_init(void) {
     ggml_backend_blas_context * ctx = new ggml_backend_blas_context;
 
     ggml_backend_t backend = new ggml_backend {
-        /* .guid    = */ ggml_backend_blas_guid(),
-        /* .iface   = */ blas_backend_i,
-        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_blas_reg(), 0),
-        /* .context = */ ctx,
+        /* .guid     = */ ggml_backend_blas_guid(),
+        /* .iface    = */ blas_backend_i,
+        /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_blas_reg(), 0),
+        /* .context  = */ ctx,
+#ifdef LLAMA_USE_PROFILER
+        /* .profiler = */ nullptr,
+#endif
     };
+
+#ifdef LLAMA_USE_PROFILER
+    // Register profiler
+    ggml_backend_blas_context * blas_ctx = ctx;  // ctx is already defined above
+
+    static auto blas_prof_enable = [](void * ctx, bool enable) {
+        auto * bctx             = (ggml_backend_blas_context *) ctx;
+        bctx->profiling_enabled = enable;
+        if (!enable) {
+            bctx->profiling_records.clear();
+        }
+    };
+    static auto blas_prof_reset = [](void * ctx) {
+        auto * bctx = (ggml_backend_blas_context *) ctx;
+        bctx->profiling_records.clear();
+        bctx->profiling_split_id = -1;
+    };
+    static auto blas_prof_set_split_id = [](void * ctx, int split_id) {
+        auto * bctx              = (ggml_backend_blas_context *) ctx;
+        bctx->profiling_split_id = split_id;
+    };
+    static auto blas_prof_get_records = [](void * ctx, const ggml_profile_record ** out) -> int {
+        auto * bctx = (ggml_backend_blas_context *) ctx;
+        *out        = bctx->profiling_records.data();
+        return (int) bctx->profiling_records.size();
+    };
+    static auto blas_prof_free = [](void * ctx) {
+        (void) ctx;
+    };
+
+    auto * profiler = new ggml_backend_profiler{
+        /* .context      = */ blas_ctx,
+        /* .enable       = */ blas_prof_enable,
+        /* .reset        = */ blas_prof_reset,
+        /* .set_split_id = */ blas_prof_set_split_id,
+        /* .get_records  = */ blas_prof_get_records,
+        /* .free_context = */ blas_prof_free,
+    };
+    ggml_backend_set_profiler(backend, profiler);
+#endif // LLAMA_USE_PROFILER
 
 #if defined(GGML_BLAS_USE_OPENBLAS) && defined(GGML_USE_OPENMP)
     if (openblas_get_parallel() != OPENBLAS_OPENMP) {

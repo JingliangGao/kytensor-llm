@@ -5,6 +5,9 @@
 #include "llama-cpp.h"
 
 #include "ggml-opt.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 #include "ggml.h"
 
 #include <set>
@@ -536,6 +539,12 @@ struct common_params {
     bool cont_batching     = true;  // insert new sequences for decoding on-the-fly
     bool no_perf           = false; // disable performance metrics
     bool show_timings      = true;  // show timing information on CLI
+
+#ifdef LLAMA_USE_PROFILER
+    // profiling
+    bool        profiling = false;  // enable cross-backend profiling
+    std::string profiling_output;   // path to write profiling output (empty = stdout)
+#endif
     bool ctx_shift         = true;  // context shift on infinite text generation
     bool swa_full          = false; // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
     bool kv_unified        = false; // enable unified KV cache

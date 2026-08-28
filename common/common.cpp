@@ -1,4 +1,5 @@
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "gguf.h"
 
 #include "build-info.h"
@@ -1297,6 +1298,16 @@ common_init_result::common_init_result(common_params & params) :
         LOG_ERR("%s: failed to create context with model '%s'\n", __func__, params.model.path.c_str());
         return;
     }
+
+#ifdef LLAMA_USE_PROFILER
+    if (params.profiling) {
+        ggml_backend_sched_t sched = llama_context_get_sched(lctx);
+        if (sched != nullptr) {
+            ggml_backend_sched_set_profiling(sched, true);
+            LOG_INF("%s: profiling enabled\n", __func__, params.model.path.c_str());
+        }
+    }
+#endif
 
     pimpl->context.reset(lctx);
 }
