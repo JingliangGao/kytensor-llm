@@ -3,16 +3,16 @@
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
-#ifdef LLAMA_USE_PROFILER
-#include "ggml-profiler.h"
-#endif
-
 #include "ggml-metal-device.h"
 #include "ggml-metal-context.h"
 #include "ggml-metal-ops.h"
 
 #include <mutex>
 #include <string>
+
+#ifdef LLAMA_USE_PROFILER
+#include <vector>
+#endif
 
 #define GGML_METAL_NAME "MTL"
 #define GGML_METAL_MAX_DEVICES 16
@@ -586,42 +586,62 @@ static ggml_backend_i ggml_backend_metal_i = {
 };
 
 static ggml_guid_t ggml_backend_metal_guid(void) {
-    static ggml_guid guid = { 0x81, 0xa1, 0x8b, 0x1e, 0x71, 0xec, 0x79, 0xed, 0x2b, 0x85, 0xdc, 0x8a, 0x61, 0x98, 0x30, 0xe6 };
-    return &guid;
+
+    ggml_profile_record rec;
+    rec.type       = GGML_PROFILE_EVENT_OP;
+    rec.name       = ggml_op_name(node->op);
+    rec.backend_id = -1;
+    rec.split_id   = state->split_id;
+    rec.start_ns   = start_ns;
+    rec.end_ns     = end_ns;
+    rec.bytes      = ggml_nbytes(node);
+    rec.extra      = nullptr;
+    ggml_profile_record_from_tensor(&rec, node);
+    state->records.push_back(rec);
 }
 
-#ifdef LLAMA_USE_PROFILER
-// Metal backend profiler implementation
-
-static void ggml_backend_metal_profiler_enable(void * context, bool enable) {
-    ggml_metal_profiler_set_enabled((ggml_metal_t)context, enable);
+bool ggml_metal_profiler_is_enabled(ggml_metal_profiler_state * state) {
+    return state != nullptr && state->enabled;
 }
+    };
+    auto * state = new ggml_metal_profiler_state();
+    ggml_metal_set_profiler_state(ctx, state);
 
-static void ggml_backend_metal_profiler_reset(void * context) {
-    ggml_metal_profiler_reset((ggml_metal_t)context);
+    static auto metal_prof_enable = [](void * context, bool enable) {
+        auto * state = (ggml_metal_profiler_state *) context;
+        state->enabled = enable;
+        if (!enable) {
+            state->reset();
+        }
+    };
+    static auto metal_prof_reset = [](void * context) {
+        auto * state = (ggml_metal_profiler_state *) context;
+        state->reset();
+    };
+    static auto metal_prof_set_split_id = [](void * context, int split_id) {
+        auto * state = (ggml_metal_profiler_state *) context;
+        state->split_id = split_id;
+    };
+    static auto metal_prof_get_records = [](void * context, const ggml_profile_record ** out) -> int {
+        auto * state = (ggml_metal_profiler_state *) context;
+        *out = state->records.data();
+        return (int) state->records.size();
+    };
+    static auto metal_prof_free = [](void * context) {
+        auto * state = (ggml_metal_profiler_state *) context;
+        delete state;
+    };
+
+    auto * profiler = new ggml_backend_profiler {
+        /* .context      = */ state,
+        /* .enable       = */ metal_prof_enable,
+        /* .reset        = */ metal_prof_reset,
+        /* .set_split_id = */ metal_prof_set_split_id,
+        /* .get_records  = */ metal_prof_get_records,
+        /* .free_context = */ metal_prof_free,
+    };
+    ggml_backend_set_profiler(backend, profiler);
 }
-
-static void ggml_backend_metal_profiler_set_split_id(void * context, int split_id) {
-    ggml_metal_profiler_set_split_id((ggml_metal_t)context, split_id);
-}
-
-static int ggml_backend_metal_profiler_get_records(void * context, const ggml_profile_record ** out) {
-    return ggml_metal_profiler_get_records((ggml_metal_t)context, out);
-}
-
-static void ggml_backend_metal_profiler_free_context(void * context) {
-    GGML_UNUSED(context);
-    // profiler state is owned by the Metal context and freed with it
-}
-
-static struct ggml_backend_profiler ggml_backend_metal_profiler = {
-    /* .context        = */ NULL,
-    /* .enable         = */ ggml_backend_metal_profiler_enable,
-    /* .reset          = */ ggml_backend_metal_profiler_reset,
-    /* .set_split_id   = */ ggml_backend_metal_profiler_set_split_id,
-    /* .get_records    = */ ggml_backend_metal_profiler_get_records,
-    /* .free_context   = */ ggml_backend_metal_profiler_free_context,
-};
 #endif // LLAMA_USE_PROFILER
 
 ggml_backend_t ggml_backend_metal_init(void) {
@@ -646,13 +666,11 @@ ggml_backend_t ggml_backend_metal_init(void) {
 #endif
     };
 
-#ifdef LLAMA_USE_PROFILER
-    // Set up profiler for Metal backend
-    ggml_backend_metal_profiler.context = ctx;
-    ggml_backend_set_profiler(backend, &ggml_backend_metal_profiler);
-#endif
-
     ggml_backend_metal_set_n_cb(backend, 1);
+
+#ifdef LLAMA_USE_PROFILER
+    ggml_backend_metal_register_profiler(backend, ctx);
+#endif
 
     return backend;
 }
@@ -744,9 +762,16 @@ static ggml_backend_t ggml_backend_metal_device_init_backend(ggml_backend_dev_t 
         /* .interface = */ ggml_backend_metal_i,
         /* .device    = */ dev,
         /* .context   = */ ctx,
+#ifdef LLAMA_USE_PROFILER
+        /* .profiler  = */ nullptr,
+#endif
     };
 
     ggml_backend_metal_set_n_cb(backend, 1);
+
+#ifdef LLAMA_USE_PROFILER
+    ggml_backend_metal_register_profiler(backend, ctx);
+#endif
 
     return backend;
 

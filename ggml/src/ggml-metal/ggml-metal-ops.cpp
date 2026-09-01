@@ -77,6 +77,13 @@ struct ggml_metal_op {
         return ggml_graph_node(gf, idxs[i]);
     }
 
+#ifdef LLAMA_USE_PROFILER
+    int node_global_idx(int i) const {
+        assert(i >= 0 && i < (int) idxs.size());
+        return idxs[i];
+    }
+#endif
+
     bool can_fuse(int i0, const ggml_op * ops, int n_ops) const {
         assert(use_fusion);
         assert(i0 >= 0 && i0 < n_nodes());
@@ -99,6 +106,14 @@ struct ggml_metal_op {
 
     int debug_graph;
     int debug_fusion;
+
+#ifdef LLAMA_USE_PROFILER
+    // Profiling: when sample_buf is non-null, ggml_metal_op_encode brackets each impl call with
+    // two timestamp samples. The (node_idx, slot_start, slot_end) tuple is recorded in slot_map.
+    ggml_metal_sample_buf_t sample_buf      = nullptr;
+    size_t                  next_slot       = 0;
+    ggml_metal_op_sample_slot * slot_map    = nullptr;
+#endif
 
 private:
     ggml_cgraph * gf;
@@ -129,15 +144,6 @@ ggml_metal_op_t ggml_metal_op_init(
         idx_end,
         use_fusion,
         use_concurrency,
-        use_capture,
-        debug_graph,
-        debug_fusion);
-
-    return res;
-}
-
-void ggml_metal_op_free(ggml_metal_op_t ctx) {
-    delete ctx;
 }
 
 int ggml_metal_op_n_nodes(ggml_metal_op_t ctx) {
@@ -145,13 +151,16 @@ int ggml_metal_op_n_nodes(ggml_metal_op_t ctx) {
 }
 
 #ifdef LLAMA_USE_PROFILER
-const struct ggml_tensor * ggml_metal_op_node(ggml_metal_op_t ctx, int idx) {
-    if (idx < 0 || idx >= ctx->n_nodes()) {
-        return nullptr;
-    }
-    return ctx->node(idx);
+void ggml_metal_op_enable_profiling(
+        ggml_metal_op_t ctx,
+        ggml_metal_sample_buf_t sample_buf,
+        size_t slot_base,
+        ggml_metal_op_sample_slot * slot_map) {
+    ctx->sample_buf = sample_buf;
+    ctx->next_slot  = slot_base;
+    ctx->slot_map   = slot_map;
 }
-#endif
+#endif // LLAMA_USE_PROFILER
 
 static bool ggml_metal_op_concurrency_reset(ggml_metal_op_t ctx) {
     if (!ctx->mem_ranges) {
@@ -509,11 +518,34 @@ int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx) {
         ggml_metal_encoder_debug_group_push(ctx->enc, ggml_op_desc(ctx->node(idx)));
     }
 
+#ifdef LLAMA_USE_PROFILER
+    const size_t slot_start = ctx->next_slot;
+    const bool   profiling  = (ctx->sample_buf != nullptr && ctx->slot_map != nullptr);
+    if (profiling) {
+        ggml_metal_encoder_sample_timestamp(ctx->enc, ctx->sample_buf, slot_start);
+        ctx->next_slot++;
+    }
+#endif
+
     int res = ggml_metal_op_encode_impl(ctx, idx);
     if (idx + res > ctx->n_nodes()) {
         GGML_ABORT("fusion error: nodes spanning multiple encoders have been fused. this indicates a bug in the fusion logic %s",
                 "https://github.com/ggml-org/llama.cpp/pull/14849");
     }
+
+#ifdef LLAMA_USE_PROFILER
+    if (profiling) {
+        const size_t slot_end = ctx->next_slot;
+        ggml_metal_encoder_sample_timestamp(ctx->enc, ctx->sample_buf, slot_end);
+        ctx->next_slot++;
+
+        const int gidx = ctx->node_global_idx(idx);
+        ctx->slot_map[gidx].node_idx   = gidx;
+        ctx->slot_map[gidx].n_fused    = res;
+        ctx->slot_map[gidx].slot_start = slot_start;
+        ctx->slot_map[gidx].slot_end   = slot_end;
+    }
+#endif
 
     if (ctx->use_capture) {
         ggml_metal_encoder_debug_group_pop(ctx->enc);

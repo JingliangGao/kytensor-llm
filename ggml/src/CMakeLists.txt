@@ -222,6 +222,12 @@ if (GGML_BACKEND_DL)
     target_compile_definitions(ggml-base PUBLIC GGML_BACKEND_DL)
 endif()
 
+# backup xpu whitelist config inside the project tree (resolved at configure time)
+get_filename_component(GGML_XPU_CONFIG_BACKUP
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../conf/llm-whitelists.conf" ABSOLUTE)
+target_compile_definitions(ggml-base PRIVATE
+    XPU_CONFIG_BACKUP_PATH="${GGML_XPU_CONFIG_BACKUP}")
+
 if (GGML_SCHED_NO_REALLOC)
     target_compile_definitions(ggml-base PUBLIC GGML_SCHED_NO_REALLOC)
 endif()
@@ -470,11 +476,13 @@ ggml_add_backend(OPENVINO)
 ggml_add_backend(RPP)
 ggml_add_backend(DTK)
 
-# HoumoNPU backend - static linkage (always included)
-add_subdirectory(ggml-houmonpu)
-target_link_libraries(ggml PUBLIC houmonpu)
-target_compile_definitions(ggml PUBLIC GGML_USE_HOUMONPU)
-message(STATUS "Including HoumoNPU backend (static)")
+# HoumoNPU backend - static linkage
+if (GGML_HOUMO)
+    add_subdirectory(ggml-houmonpu)
+    target_link_libraries(ggml PUBLIC houmonpu)
+    target_compile_definitions(ggml PUBLIC GGML_USE_HOUMONPU)
+    message(STATUS "Including HoumoNPU backend (static)")
+endif()
 
 foreach (target ggml-base ggml)
     target_include_directories(${target} PUBLIC    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include> $<INSTALL_INTERFACE:include>)

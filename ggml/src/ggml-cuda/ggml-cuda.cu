@@ -5476,6 +5476,8 @@ static void ggml_backend_cuda_profiler_enable(void * context, bool enable) {
     ctx->profiling_enabled = enable;
     if (enable) {
         if (ctx->profiling_start_event == nullptr) {
+            // events must be created on the device that owns the compute stream
+            ggml_cuda_set_device(ctx->device);
             CUDA_CHECK(cudaEventCreate(&ctx->profiling_start_event));
             CUDA_CHECK(cudaEventCreate(&ctx->profiling_end_event));
         }
@@ -5510,14 +5512,6 @@ static void ggml_backend_cuda_profiler_free_context(void * context) {
     }
 }
 
-static struct ggml_backend_profiler ggml_backend_cuda_profiler = {
-    /* .context        = */ NULL,
-    /* .enable         = */ ggml_backend_cuda_profiler_enable,
-    /* .reset          = */ ggml_backend_cuda_profiler_reset,
-    /* .set_split_id   = */ ggml_backend_cuda_profiler_set_split_id,
-    /* .get_records    = */ ggml_backend_cuda_profiler_get_records,
-    /* .free_context   = */ ggml_backend_cuda_profiler_free_context,
-};
 #endif // LLAMA_USE_PROFILER
 
 ggml_backend_t ggml_backend_cuda_init(int device) {
@@ -5543,9 +5537,16 @@ ggml_backend_t ggml_backend_cuda_init(int device) {
     };
 
 #ifdef LLAMA_USE_PROFILER
-    // Set up profiler for CUDA backend
-    ggml_backend_cuda_profiler.context = ctx;
-    ggml_backend_set_profiler(cuda_backend, &ggml_backend_cuda_profiler);
+    // Set up profiler for CUDA backend (heap-allocated, ownership transferred to the scheduler)
+    auto * profiler = new ggml_backend_profiler {
+        /* .context      = */ ctx,
+        /* .enable       = */ ggml_backend_cuda_profiler_enable,
+        /* .reset        = */ ggml_backend_cuda_profiler_reset,
+        /* .set_split_id = */ ggml_backend_cuda_profiler_set_split_id,
+        /* .get_records  = */ ggml_backend_cuda_profiler_get_records,
+        /* .free_context = */ ggml_backend_cuda_profiler_free_context,
+    };
+    ggml_backend_set_profiler(cuda_backend, profiler);
 #endif
 
     return cuda_backend;

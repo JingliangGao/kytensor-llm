@@ -11,14 +11,6 @@
 
 #import <Metal/Metal.h>
 
-#ifdef LLAMA_USE_PROFILER
-#import "ggml-profiler.h"
-
-#import <mach/mach_time.h>
-#endif
-
-#undef MIN
-#undef MAX
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -29,26 +21,8 @@ struct ggml_metal_command_buffer {
     id<MTLCommandBuffer> obj;
 };
 
-#ifdef LLAMA_USE_PROFILER
-// one sampled op: maps a profiling record to its GPU timestamp sample pair
-struct ggml_metal_prof_pair {
-    int rec_idx;
-    int sample_start;
-    int sample_end;
-};
-#endif
-
 struct ggml_metal {
     char name[128];
-
-    ggml_metal_device_t  dev;
-    ggml_metal_library_t lib;
-
-    ggml_metal_event_t ev_cpy; // for async copies
-
-    dispatch_queue_t d_queue;
-
-    // additional, inference-time compiled pipelines
     ggml_metal_pipelines_t pipelines_ext;
 
     bool use_fusion;
@@ -96,155 +70,16 @@ struct ggml_metal {
     bool has_error;
 
 #ifdef LLAMA_USE_PROFILER
-    // unified profiler state
-    bool prof_enabled;
-    int  prof_split_id;
+    // Profiling
+    // Borrowed; owned by the C++ backend layer (ggml-metal.cpp). NULL when profiling is unavailable.
+    struct ggml_metal_profiler_state * profiler_state;
 
-    // accumulated profiling records (dynamic C array)
-    struct ggml_profile_record * prof_records;
-    int prof_n_records;
-    int prof_cap_records;
-
-    // GPU timestamp sampling state for the last submitted graph
-    id<MTLCounterSampleBuffer> prof_counter_buf;
-    int prof_sample_cap;
-    int prof_n_samples;
-
-    // sampled ops of the last submitted graph
-    struct ggml_metal_prof_pair * prof_pairs;
-    int prof_n_pairs;
-    int prof_cap_pairs;
-#endif
+    // Per-graph-compute scratch state populated when profiling is active for the current invocation.
+    // Lifetime: from start of ggml_metal_graph_compute until its end.
+    bool                              profiler_active;
+    ggml_metal_sample_buf_t           profiler_sample_buf;
+    size_t                            profiler_total_slots;
 };
-
-#ifdef LLAMA_USE_PROFILER
-static int ggml_metal_profiler_add_record(ggml_metal_t ctx, const struct ggml_profile_record * rec) {
-    if (ctx->prof_n_records == ctx->prof_cap_records) {
-        ctx->prof_cap_records = ctx->prof_cap_records > 0 ? 2*ctx->prof_cap_records : 1024;
-        ctx->prof_records = (struct ggml_profile_record *) realloc(ctx->prof_records, ctx->prof_cap_records*sizeof(struct ggml_profile_record));
-    }
-    ctx->prof_records[ctx->prof_n_records] = *rec;
-    return ctx->prof_n_records++;
-}
-
-// record the op and sample a start GPU timestamp; returns the record index (used by ggml_metal_profiler_end_op)
-static int ggml_metal_profiler_begin_op(ggml_metal_t ctx, id<MTLCommandBuffer> cmd_buf, ggml_metal_op_t ctx_op, int idx) {
-    const struct ggml_tensor * node = ggml_metal_op_node(ctx_op, idx);
-    if (node == NULL) {
-        return -1;
-    }
-
-    struct ggml_profile_record rec;
-    memset(&rec, 0, sizeof(rec));
-    rec.type       = GGML_PROFILE_EVENT_OP;
-    rec.name       = ggml_op_name(node->op);
-    rec.backend_id = -1;
-    rec.split_id   = ctx->prof_split_id;
-    rec.start_ns   = 0;
-    rec.end_ns     = 0;
-    rec.bytes      = ggml_nbytes(node);
-    rec.extra      = NULL;
-    ggml_profile_record_from_tensor(&rec, node);
-
-    const int rec_idx = ggml_metal_profiler_add_record(ctx, &rec);
-
-    if (ctx->prof_n_pairs == ctx->prof_cap_pairs) {
-        ctx->prof_cap_pairs = ctx->prof_cap_pairs > 0 ? 2*ctx->prof_cap_pairs : 1024;
-        ctx->prof_pairs = (struct ggml_metal_prof_pair *) realloc(ctx->prof_pairs, ctx->prof_cap_pairs*sizeof(struct ggml_metal_prof_pair));
-    }
-    ctx->prof_pairs[ctx->prof_n_pairs].rec_idx     = rec_idx;
-    ctx->prof_pairs[ctx->prof_n_pairs].sample_start = ctx->prof_n_samples;
-    ctx->prof_pairs[ctx->prof_n_pairs].sample_end   = ctx->prof_n_samples + 1;
-    ctx->prof_n_pairs++;
-
-    [cmd_buf sampleCountersInBuffer:ctx->prof_counter_buf atSampleIndex:ctx->prof_n_samples withBarrier:YES];
-    ctx->prof_n_samples++;
-
-    return rec_idx;
-}
-
-// sample the end GPU timestamp for the op started by ggml_metal_profiler_begin_op
-static void ggml_metal_profiler_end_op(ggml_metal_t ctx, id<MTLCommandBuffer> cmd_buf, int rec_idx) {
-    if (rec_idx < 0) {
-        return;
-    }
-    [cmd_buf sampleCountersInBuffer:ctx->prof_counter_buf atSampleIndex:ctx->prof_n_samples withBarrier:YES];
-    ctx->prof_n_samples++;
-}
-#endif // LLAMA_USE_PROFILER
-
-ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
-    GGML_LOG_INFO("%s: allocating\n", __func__);
-
-#if TARGET_OS_OSX && !GGML_METAL_NDEBUG
-    // Show all the Metal device instances in the system
-    NSArray * devices = MTLCopyAllDevices();
-    for (id<MTLDevice> device in devices) {
-        GGML_LOG_INFO("%s: found device: %s\n", __func__, [[device name] UTF8String]);
-    }
-    [devices release]; // since it was created by a *Copy* C method
-#endif
-
-    // init context
-    ggml_metal_t res = calloc(1, sizeof(struct ggml_metal));
-
-    id<MTLDevice> device = ggml_metal_device_get_obj(dev);
-
-    GGML_LOG_INFO("%s: picking default device: %s\n", __func__, [[device name] UTF8String]);
-
-    // TODO: would it be better to have one queue for the backend and one queue for the device?
-    //       the graph encoders and async ops would use the backend queue while the sync ops would use the device queue?
-    //res->queue = [device newCommandQueue]; [TAG_QUEUE_PER_BACKEND]
-    id<MTLCommandQueue> queue = ggml_metal_device_get_queue(dev);
-    if (queue == nil) {
-        GGML_LOG_ERROR("%s: error: failed to create command queue\n", __func__);
-        return NULL;
-    }
-
-    res->dev = dev;
-    res->lib = ggml_metal_device_get_library(dev);
-    if (res->lib == NULL) {
-        GGML_LOG_WARN("%s: the device does not have a precompiled Metal library - this is unexpected\n", __func__);
-        GGML_LOG_WARN("%s: will try to compile it on the fly\n", __func__);
-
-        res->lib = ggml_metal_library_init(dev);
-        if (res->lib == NULL) {
-            GGML_LOG_ERROR("%s: error: failed to initialize the Metal library\n", __func__);
-
-            free(res);
-
-            return NULL;
-        }
-    }
-
-    res->ev_cpy = ggml_metal_device_event_init(dev);
-
-    const struct ggml_metal_device_props * props_dev = ggml_metal_device_get_props(dev);
-
-    snprintf(res->name, sizeof(res->name), "%s", props_dev->name);
-
-    res->d_queue = dispatch_queue_create("ggml-metal", DISPATCH_QUEUE_CONCURRENT);
-
-    res->use_fusion      = getenv("GGML_METAL_FUSION_DISABLE") == nil;
-    res->use_concurrency = getenv("GGML_METAL_CONCURRENCY_DISABLE") == nil;
-
-    {
-        const char * val = getenv("GGML_METAL_GRAPH_DEBUG");
-        res->debug_graph = val ? atoi(val) : 0;
-    }
-
-    {
-        const char * val = getenv("GGML_METAL_FUSION_DEBUG");
-        res->debug_fusion = val ? atoi(val) : 0;
-    }
-
-    res->use_graph_optimize = true;
-
-    if (getenv("GGML_METAL_GRAPH_OPTIMIZE_DISABLE") != NULL) {
-        res->use_graph_optimize = false;
-    }
-
-    memset(res->fuse_cnt, 0, sizeof(res->fuse_cnt));
 
     GGML_LOG_INFO("%s: use fusion         = %s\n", __func__, res->use_fusion         ? "true" : "false");
     GGML_LOG_INFO("%s: use concurrency    = %s\n", __func__, res->use_concurrency    ? "true" : "false");
@@ -280,15 +115,6 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
 
 void ggml_metal_free(ggml_metal_t ctx) {
     GGML_LOG_INFO("%s: deallocating\n", __func__);
-
-#ifdef LLAMA_USE_PROFILER
-    if (ctx->prof_counter_buf) {
-        [ctx->prof_counter_buf release];
-        ctx->prof_counter_buf = nil;
-    }
-    free(ctx->prof_records);
-    free(ctx->prof_pairs);
-#endif
 
     for (int i = 0; i < GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
         if (ctx->cmd_bufs[i].obj) {
@@ -363,15 +189,6 @@ void ggml_metal_synchronize(ggml_metal_t ctx) {
                 ctx->has_error = true;
                 return;
             }
-        }
-    }
-
-    // release any completed extra command buffers
-    if (ctx->cmd_bufs_ext.count > 0) {
-        for (size_t i = 0; i < ctx->cmd_bufs_ext.count; ++i) {
-            id<MTLCommandBuffer> cmd_buf = ctx->cmd_bufs_ext[i];
-
-            MTLCommandBufferStatus status = [cmd_buf status];
             if (status != MTLCommandBufferStatusCompleted) {
                 GGML_LOG_ERROR("%s: error: command buffer %d failed with status %d\n", __func__, (int) i, (int) status);
                 if (status == MTLCommandBufferStatusError) {
@@ -551,6 +368,36 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     // keep the memory wired
     ggml_metal_device_rsets_keep_alive(ctx->dev);
 
+#ifdef LLAMA_USE_PROFILER
+    // Decide whether profiling is active for this invocation. Activation is sticky for the whole
+    // call: allocate sample buffer + slot map up front so the encode_async block can use them.
+    ctx->profiler_active = false;
+    if (ctx->profiler_state != NULL && ggml_metal_profiler_is_enabled(ctx->profiler_state)) {
+        if (ggml_metal_device_supports_profiling(ctx->dev) && gf->n_nodes > 0) {
+            const size_t total_slots = 2 * (size_t) gf->n_nodes;
+            ctx->profiler_sample_buf = ggml_metal_device_create_sample_buf(ctx->dev, total_slots);
+            if (ctx->profiler_sample_buf != NULL) {
+                ctx->profiler_total_slots = total_slots;
+                ctx->profiler_slot_map = (struct ggml_metal_op_sample_slot *) calloc(
+                    (size_t) gf->n_nodes, sizeof(struct ggml_metal_op_sample_slot));
+                if (ctx->profiler_slot_map != NULL) {
+                    // Mark all entries unused (node_idx < 0).
+                    for (int i = 0; i < gf->n_nodes; ++i) {
+                        ctx->profiler_slot_map[i].node_idx = -1;
+                    }
+                    ggml_metal_device_sample_timestamps(ctx->dev,
+                                                       &ctx->profiler_cpu_anchor_ns,
+                                                       &ctx->profiler_gpu_anchor_ns);
+                    ctx->profiler_active = true;
+                } else {
+                    ggml_metal_sample_buf_free(ctx->profiler_sample_buf);
+                    ctx->profiler_sample_buf = NULL;
+                }
+            }
+        }
+    }
+#endif // LLAMA_USE_PROFILER
+
     // submit the ggml compute graph to the GPU by creating command buffers and encoding the ops in them
     // the first n_nodes_0 are encoded and submitted for processing directly by the calling thread
     // while these nodes are processing, we start n_cb threads to enqueue the rest of the nodes
@@ -607,59 +454,6 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         // short-hand
         id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
 
-#ifdef LLAMA_USE_PROFILER
-        const bool prof_active = ctx->prof_enabled && !use_capture;
-        int prof_n_cb_saved = -1;
-        if (prof_active) {
-            // profiling needs per-op GPU timestamps: submit the whole graph with a
-            // single command buffer from the main thread and wait for completion
-            // before resolving the samples
-            ctx->n_nodes_0 = gf->n_nodes;
-            ctx->n_nodes_1 = 0;
-            ctx->n_nodes_per_cb = 0;
-
-            prof_n_cb_saved = ctx->n_cb;
-            ctx->n_cb = 0;
-
-            ctx->prof_n_samples = 0;
-            ctx->prof_n_pairs   = 0;
-
-            if (ctx->prof_counter_buf == nil || ctx->prof_sample_cap < 2*gf->n_nodes) {
-                [ctx->prof_counter_buf release];
-                ctx->prof_counter_buf = nil;
-
-                id<MTLDevice> device = ggml_metal_device_get_obj(ctx->dev);
-                id<MTLCounterSet> ts_counter_set = nil;
-                for (id<MTLCounterSet> cs in [device counterSets]) {
-                    if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp]) {
-                        ts_counter_set = cs;
-                        break;
-                    }
-                }
-
-                if (ts_counter_set != nil) {
-                    MTLCounterSampleBufferDescriptor * desc = [[MTLCounterSampleBufferDescriptor alloc] init];
-                    desc.counterSet  = ts_counter_set;
-                    desc.storageMode = MTLStorageModeShared;
-                    desc.sampleCount = MAX(2, 2*gf->n_nodes);
-
-                    NSError * err = nil;
-                    ctx->prof_counter_buf = [device newCounterSampleBufferWithDescriptor:desc error:&err];
-                    [desc release];
-
-                    if (err != nil) {
-                        GGML_LOG_WARN("%s: failed to create counter sample buffer: %s\n", __func__, [[err localizedDescription] UTF8String]);
-                        ctx->prof_counter_buf = nil;
-                    } else {
-                        ctx->prof_sample_cap = MAX(2, 2*gf->n_nodes);
-                    }
-                } else {
-                    GGML_LOG_WARN("%s: device does not support timestamp counters - no GPU timings will be recorded\n", __func__);
-                }
-            }
-        }
-#endif // LLAMA_USE_PROFILER
-
         // the main thread commits the first few commands immediately
         // cmd_buf[n_cb]
         {
@@ -712,86 +506,64 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             // wait for completion and check status of each command buffer
             // needed to detect if the device ran out-of-memory for example (#1881)
             {
+        // Profiling drain: wait for all command buffers to complete, resolve timestamps, push records.
+        // This forces a synchronous wait - Vulkan does the same when its profiler is active.
+        if (ctx->profiler_active) {
+            {
                 id<MTLCommandBuffer> cmd_buf = ctx->cmd_bufs[n_cb].obj;
-                [cmd_buf waitUntilCompleted];
-
-                MTLCommandBufferStatus status = [cmd_buf status];
-                if (status != MTLCommandBufferStatusCompleted) {
-                    GGML_LOG_INFO("%s: command buffer %d failed with status %lu\n", __func__, n_cb, status);
-                    if (status == MTLCommandBufferStatusError) {
-                        GGML_LOG_INFO("error: %s\n", [[cmd_buf error].localizedDescription UTF8String]);
-                    }
-
-                    return GGML_STATUS_FAILED;
+                if (cmd_buf) {
+                    [cmd_buf waitUntilCompleted];
                 }
             }
-
             for (int i = 0; i < n_cb; ++i) {
                 id<MTLCommandBuffer> cmd_buf = ctx->cmd_bufs[i].obj;
-                [cmd_buf waitUntilCompleted];
-
-                MTLCommandBufferStatus status = [cmd_buf status];
-                if (status != MTLCommandBufferStatusCompleted) {
-                    GGML_LOG_INFO("%s: command buffer %d failed with status %lu\n", __func__, i, status);
-                    if (status == MTLCommandBufferStatusError) {
-                        GGML_LOG_INFO("error: %s\n", [[cmd_buf error].localizedDescription UTF8String]);
+                if (cmd_buf) {
+                    // Ensure cmd_bufs that were not auto-enqueued get committed.
+                    if ([cmd_buf status] == MTLCommandBufferStatusNotEnqueued) {
+                        [cmd_buf commit];
                     }
-
-                    return GGML_STATUS_FAILED;
-                }
-
-                id<MTLCommandBuffer> next_buffer = (i + 1 < n_cb ? ctx->cmd_bufs[i + 1].obj : nil);
-                if (!next_buffer) {
-                    continue;
-                }
-
-                const bool next_queued = ([next_buffer status] != MTLCommandBufferStatusNotEnqueued);
-                if (next_queued) {
-                    continue;
-                }
-
-                if (ctx->abort_callback && ctx->abort_callback(ctx->abort_callback_data)) {
-                    GGML_LOG_INFO("%s: command buffer %d aborted", __func__, i);
-                    return GGML_STATUS_ABORTED;
-                }
-
-                [next_buffer commit];
-            }
-
-            [ctx->capture_scope endScope];
-            [[MTLCaptureManager sharedCaptureManager] stopCapture];
-
-            ctx->capture_started = false;
-        }
-
-#ifdef LLAMA_USE_PROFILER
-        if (prof_active) {
-            // wait for the GPU and resolve the timestamp samples into the records
-            [ctx->cmd_buf_last waitUntilCompleted];
-
-            if (ctx->prof_n_samples > 0 && ctx->prof_n_pairs > 0 && ctx->prof_counter_buf != nil) {
-                NSData * data = [ctx->prof_counter_buf resolveCounterSamples:NSMakeRange(0, ctx->prof_n_samples)];
-
-                if (data != nil && data.length >= ctx->prof_n_samples*sizeof(MTLCounterResultTimestamp)) {
-                    const MTLCounterResultTimestamp * ts = (const MTLCounterResultTimestamp *) data.bytes;
-
-                    // convert mach absolute time to nanoseconds
-                    static mach_timebase_info_data_t tb = { 0, 0 };
-                    if (tb.denom == 0) {
-                        mach_timebase_info(&tb);
-                    }
-
-                    for (int i = 0; i < ctx->prof_n_pairs; i++) {
-                        const struct ggml_metal_prof_pair * p = &ctx->prof_pairs[i];
-                        struct ggml_profile_record * r = &ctx->prof_records[p->rec_idx];
-
-                        r->start_ns = ts[p->sample_start].timestamp * tb.numer / tb.denom;
-                        r->end_ns   = ts[p->sample_end].timestamp   * tb.numer / tb.denom;
-                    }
+                    [cmd_buf waitUntilCompleted];
                 }
             }
 
-            ctx->n_cb = prof_n_cb_saved;
+            uint64_t * ns = (uint64_t *) calloc(ctx->profiler_total_slots, sizeof(uint64_t));
+            if (ns != NULL) {
+                ggml_metal_sample_buf_resolve(ctx->profiler_sample_buf,
+                                              /*base=*/0,
+                                              ctx->profiler_total_slots,
+                                              ctx->profiler_cpu_anchor_ns,
+                                              ctx->profiler_gpu_anchor_ns,
+                                              ns);
+
+                for (int i = 0; i < gf->n_nodes; ++i) {
+                    const struct ggml_metal_op_sample_slot * slot = &ctx->profiler_slot_map[i];
+                    if (slot->node_idx < 0) {
+                        continue;
+                    }
+                    if (slot->slot_start >= ctx->profiler_total_slots ||
+                        slot->slot_end   >= ctx->profiler_total_slots) {
+                        continue;
+                    }
+                    const uint64_t t0 = ns[slot->slot_start];
+                    const uint64_t t1 = ns[slot->slot_end];
+                    if (t0 == 0 || t1 == 0 || t1 < t0) {
+                        continue;
+                    }
+                    ggml_metal_profiler_push_record(ctx->profiler_state,
+                                                    ggml_graph_node(gf, slot->node_idx),
+                                                    t0,
+                                                    t1);
+                }
+
+                free(ns);
+            }
+
+            free(ctx->profiler_slot_map);
+            ctx->profiler_slot_map = NULL;
+            ggml_metal_sample_buf_free(ctx->profiler_sample_buf);
+            ctx->profiler_sample_buf = NULL;
+            ctx->profiler_total_slots = 0;
+            ctx->profiler_active = false;
         }
 #endif // LLAMA_USE_PROFILER
     }
@@ -837,37 +609,6 @@ void ggml_metal_event_wait(ggml_metal_t ctx, ggml_metal_event_t ev) {
         [ctx->cmd_bufs_ext addObject:cmd_buf];
         ctx->cmd_buf_last = cmd_buf;
 
-        [cmd_buf retain];
-    }
-}
-
-ggml_metal_event_t ggml_metal_get_ev_cpy(ggml_metal_t ctx) {
-    return ctx->ev_cpy;
-}
-
-void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
-    if (ctx->n_cb != n_cb) {
-        ctx->n_cb = MIN(n_cb, GGML_METAL_MAX_COMMAND_BUFFERS);
-
-        if (ctx->n_cb > 2) {
-            GGML_LOG_WARN("%s: n_cb = %d, using n_cb > 2 is not recommended and can degrade the performance in some cases\n", __func__, n_cb);
-        }
-    }
-
-    if (ctx->encode_async) {
-        Block_release(ctx->encode_async);
-    }
-
-    ctx->encode_async = Block_copy(^(size_t iter) {
-        const int cb_idx = iter;
-        const int n_cb_l = ctx->n_cb;
-
-        const int n_nodes_0 = ctx->n_nodes_0;
-        const int n_nodes_1 = ctx->n_nodes_1;
-
-        const int n_nodes_per_cb = ctx->n_nodes_per_cb;
-
-        int idx_start = 0;
         int idx_end   = n_nodes_0;
 
         if (cb_idx < n_cb_l) {
@@ -889,17 +630,21 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
             ctx->debug_graph,
             ctx->debug_fusion);
 
+#ifdef LLAMA_USE_PROFILER
+        if (ctx->profiler_active) {
+            // Base slot for this command buffer is 2 * (first graph-node index it processes).
+            // The encoder uses one (start, end) pair per encoded op group; we over-allocate so
+            // that empty/filtered nodes simply leave gaps in the sample buffer.
+            const size_t base_slot = 2 * (size_t) idx_start;
+            ggml_metal_op_enable_profiling(ctx_op,
+                                           ctx->profiler_sample_buf,
+                                           base_slot,
+                                           ctx->profiler_slot_map);
+        }
+#endif // LLAMA_USE_PROFILER
+
         for (int idx = 0; idx < ggml_metal_op_n_nodes(ctx_op); ++idx) {
-#ifdef LLAMA_USE_PROFILER
-            int prof_rec_idx = -1;
-            if (ctx->prof_enabled && ctx->prof_counter_buf != nil) {
-                prof_rec_idx = ggml_metal_profiler_begin_op(ctx, cmd_buf, ctx_op, idx);
-            }
-#endif
             const int res = ggml_metal_op_encode(ctx_op, idx);
-#ifdef LLAMA_USE_PROFILER
-            ggml_metal_profiler_end_op(ctx, cmd_buf, prof_rec_idx);
-#endif
             if (res == 0) {
                 break;
             }
@@ -933,28 +678,7 @@ void ggml_metal_capture_next_compute(ggml_metal_t ctx) {
 }
 
 #ifdef LLAMA_USE_PROFILER
-// unified profiler API (used by the ggml_backend_profiler interface in ggml-metal.cpp)
-
-void ggml_metal_profiler_reset(ggml_metal_t ctx) {
-    ctx->prof_n_records = 0;
-    ctx->prof_n_pairs   = 0;
-    ctx->prof_n_samples = 0;
-    ctx->prof_split_id  = -1;
-}
-
-void ggml_metal_profiler_set_enabled(ggml_metal_t ctx, bool enable) {
-    ctx->prof_enabled = enable;
-    if (!enable) {
-        ggml_metal_profiler_reset(ctx);
-    }
-}
-
-void ggml_metal_profiler_set_split_id(ggml_metal_t ctx, int split_id) {
-    ctx->prof_split_id = split_id;
-}
-
-int ggml_metal_profiler_get_records(ggml_metal_t ctx, const struct ggml_profile_record ** out) {
-    *out = ctx->prof_records;
-    return ctx->prof_n_records;
+void ggml_metal_set_profiler_state(ggml_metal_t ctx, struct ggml_metal_profiler_state * state) {
+    ctx->profiler_state = state;
 }
 #endif // LLAMA_USE_PROFILER

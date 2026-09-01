@@ -26,10 +26,25 @@ int ggml_metal_op_n_nodes(ggml_metal_op_t ctx);
 
 int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx);
 
-#ifdef LLAMA_USE_PROFILER
-// get the node at index idx (for the unified profiler)
-const struct ggml_tensor * ggml_metal_op_node(ggml_metal_op_t ctx, int idx);
-#endif
+// (node_idx, slot_start, slot_end) triple recorded for each encoded op group.
+// node_idx < 0 marks an unused slot.
+struct ggml_metal_op_sample_slot {
+    int    node_idx;
+    int    n_fused;
+    size_t slot_start;
+    size_t slot_end;
+};
+
+// Enable profiling on this op encoder. `slot_base` is the first index in `sample_buf` available
+// to this encoder; `slot_map` is an array (size = number of graph nodes) into which
+// the encoder will record one entry per non-empty encoded op group.
+// Must be called before any ggml_metal_op_encode().
+void ggml_metal_op_enable_profiling(
+        ggml_metal_op_t ctx,
+        ggml_metal_sample_buf_t sample_buf,
+        size_t slot_base,
+        struct ggml_metal_op_sample_slot * slot_map);
+#endif // LLAMA_USE_PROFILER
 
 //
 // available ops:

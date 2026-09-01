@@ -9,6 +9,10 @@
 #define XPU_PLUGIN_NAME_SIZE 10
 #define MAX_CONFIG_LINE_SIZE 256
 #define XPU_CONFIG_PATH "/usr/share/kytensor/llm-whitelists.conf"
+// XPU_CONFIG_BACKUP_PATH is injected by CMake, pointing to <project>/conf/llm-whitelists.conf
+#ifndef XPU_CONFIG_BACKUP_PATH
+#define XPU_CONFIG_BACKUP_PATH "conf/llm-whitelists.conf"
+#endif
 
 card_id_t* read_card_config(int* count) {
     FILE* fp;
@@ -17,13 +21,19 @@ card_id_t* read_card_config(int* count) {
     int capacity = 32;
     int idx = 0;
 
-    // 尝试打开配置文件
+    // 尝试打开配置文件，主路径失败时使用备用路径
     fp = fopen(XPU_CONFIG_PATH, "r");
     if (!fp) {
-        fprintf(stderr, "ERROR: Cannot open config file: %s\n", XPU_CONFIG_PATH);
-        return NULL;
-    }
+        fprintf(stderr, "WARNING: Cannot open config file: %s, trying backup: %s\n",
+                XPU_CONFIG_PATH, XPU_CONFIG_BACKUP_PATH);
 
+        fp = fopen(XPU_CONFIG_BACKUP_PATH, "r");
+        if (!fp) {
+            fprintf(stderr, "ERROR: Cannot open config file: %s\n", XPU_CONFIG_BACKUP_PATH);
+            return NULL;
+        }
+    }
+        
     // 分配初始内存
     cards = (card_id_t *)malloc(capacity * sizeof(card_id_t));
     if (!cards) {
