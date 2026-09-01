@@ -10,7 +10,7 @@
 
 ## 1. 设计目标
 
-1. **跨后端统一视图**：CPU、BLAS（以及上游支持的 CUDA / Vulkan）的计时数据汇聚到同一个记录列表中，统一聚合、排序、导出，而不是各后端各自打印。
+1. **跨后端统一视图**：CPU、BLAS、CUDA、Vulkan、Metal 的计时数据汇聚到同一个记录列表中，统一聚合、排序、导出，而不是各后端各自打印。
 2. **零侵入启用**：任何基于 ggml 调度器的应用（包括第三方程序）无需改代码，仅通过 `GGML_PROFILE` 环境变量即可开启；官方工具则提供 `--profile` / `--profile-output` 命令行参数。
 3. **默认零开销**：未启用时不产生任何计时调用；启用后才注入计时逻辑。
 4. **记录可导出**：支持控制台摘要、纯文本报告、JSON（机器可读，供离线分析工具使用）三种输出。
@@ -34,8 +34,9 @@
 │ ggml 调度层 (ggml-backend.cpp)                              │
 │   收集各后端记录、计时跨后端 COPY、聚合/打印/导出            │
 ├────────────────────────────────────────────────────────────┤
-│ 后端层 (ggml-cpu / ggml-blas ...)                          │
-│   实现 ggml_backend_profiler vtable，逐 op 产生记录         │
+│ 后端层 (ggml-cpu / ggml-blas / ggml-cuda /               │
+│         ggml-vulkan / ggml-metal)                         │
+│   实现 ggml_backend_profiler vtable，逐 op 产生记录        │
 ├────────────────────────────────────────────────────────────┤
 │ 基础设施 (ggml-profiler.h / ggml-profiler.cpp)             │
 │   记录结构、事件类型、时间源、记录转换、导出工具函数          │
@@ -106,6 +107,35 @@ CPU 后端把一个图拆给多线程并行执行（`ggml_graph_compute_thread`�
 ### 4.4 异步执行下的正确性
 
 启用 profiling 时，`llama_context::graph_compute` 在 `ggml_backend_sched_graph_compute_async` 之后显式调用 `ggml_backend_sched_synchronize`，确保异步后端（如 GPU）真正执行完毕，记录的时间戳才是完整的，而不是只测到"提交"为止。
+
+### 4.5 GPU 后端的共同模式：GPU 硬件计时 + profiling 时逐 op 同步收集
+
+GPU 后端上，CPU 墙钟只能测到"提交"，测不到"执行"。三个 GPU 后端因此都遵循同一模式：
+
+- 使用 GPU 自身的计时硬件——CUDA Event、Vulkan timestamp Query Pool、Metal Counter Sampling——获得每个 op 的执行耗时；
+- 启用 profiling 时，把异步/流水/批量的执行路径降级为可逐 op 归因的同步收集路径；
+- 产生的记录统一写入 `ggml_profile_record` 列表，由调度器按同一流程收集、覆写 `backend_id`、聚合导出。
+
+### 4.6 CUDA：逐节点事件对 + 临时禁用 CUDA Graphs
+
+- 每个节点在 `ggml_cuda_compute_forward` 前后各记录一个 `cudaEvent_t`，随即 `cudaEventSynchronize` 并用 `cudaEventElapsedTime` 读出毫秒耗时，换算成纳秒存入 `end_ns`；`start_ns = 0`（与上游约定一致：CUDA 记录只有持续时间有意义，绝对时间戳不适用）；
+- 本工程无条件启用 `USE_CUDA_GRAPH`，而 graph replay 会跳过逐节点循环、导致事件对无法记录。因此 `ggml_backend_cuda_graph_compute` 在 profiling 开启时，先把当前 graph key 对应图标记禁用，走逐节点直接执行，函数返回前恢复原状态；
+- 代价：逐节点同步使 GPU 流水线串行化，执行效率显著下降——这是"逐 op 可归因"必须付出的代价，仅在 profiling 时发生。
+
+### 4.7 Vulkan：timestamp query pool + CPU 时间锚定
+
+- 复用后端已有的 `vk_perf_logger` 基础设施：`VkQueryPool` timestamp 查询，逐 op（普通模式）或逐融合组（concurrent 模式）写入 query；
+- 图计算提交后 `getQueryPoolResults(eWait)` 取回全部时间戳，相邻 query 差值乘以设备 `timestampPeriod` 得到纳秒耗时；
+- 记录的 `start_ns` 取提交时用 `ggml_profiler_time_ns()` 采集的 CPU 时间，`end_ns = start_ns + duration`，使 GPU 记录与 CPU 记录共享同一时间轴；
+- 与 `GGML_VK_PERF_LOGGER` 环境变量日志共用同一套 query 采集，profiler 开启时两者可同时工作。
+
+### 4.8 Metal：counter sampling + 单命令缓冲同步提交（自研，上游无参考）
+
+- 使用 `MTLCounterSampleBuffer`（`MTLCommonCounterSetTimestamp`），在每个 `ggml_metal_op_encode` 前后调用 `[cmd_buf sampleCountersInBuffer:... withBarrier:YES]` 采集一对 GPU 时间戳；
+- Metal 常规路径为多命令缓冲 + 后台线程编码 + 异步提交，无法逐 op 采样/解析。因此 profiling 时强制：全部节点放入单个命令缓冲（`n_nodes_0 = 全部节点`、`n_cb = 0`）、主线程提交，`waitUntilCompleted` 后 `resolveCounterSamples` 一次性读回；
+- 时间戳经 `mach_timebase_info` 换算为纳秒。注意其为 GPU 时基，图内互相可比，但与 CPU 单调时钟不是同一 epoch（时间线工具中 GPU 段内部顺序正确）；
+- `.m` 文件按纯 Objective-C 编译（无 C++ STL），profiler 状态用 C `realloc` 动态数组管理；
+- 设备不支持 timestamp counter 时打 WARN 并降级为只记录 op 元信息（时间为 0）。
 
 ---
 
@@ -194,6 +224,11 @@ if (params.profiling) {
 | 记录累积直到显式 reset | 支持分段测量（如只测某次请求），也支持全程统计 |
 | 调度器缓存后端元数据 | 释放阶段自动导出时，后端对象可能已先被释放 |
 | `bandwidth = bytes / duration` | 作为吞吐代理指标：低带宽通常意味着计算瓶颈，高带宽意味着访存瓶颈 |
+| GPU 后端用 GPU 计时硬件（事件 / query / counter）而非 CPU 墙钟 | CPU 时间只能测到提交，无法反映 GPU 上的真实执行耗时 |
+| GPU profiling 时逐 op 同步收集 | 以执行效率换逐 op 可归因性；降级路径只在开启计时时生效 |
+| CUDA profiling 时临时禁用 CUDA Graphs，结束后恢复 | graph replay 跳过逐节点循环，逐节点事件对无法记录 |
+| Vulkan 记录锚定提交时刻的 CPU 时间 | GPU 时间戳与 CPU 时间轴对齐，跨后端时间线可比 |
+| Metal 记录为 GPU 时基换算的绝对时间戳 | 图内互相可比；与 CPU 单调时钟不同 epoch，属已知取舍 |
 
 ---
 
@@ -211,12 +246,16 @@ option(LLAMA_USE_PROFILER "llama: enable cross-backend profiler" ON)
 - 关闭：`cmake -B build -DLLAMA_USE_PROFILER=OFF`，所有 `#ifdef LLAMA_USE_PROFILER` 包裹的代码（结构体字段、计时逻辑、`--profile` 参数、导出逻辑、`GGML_PROFILE` 环境变量支持等）均不参与编译，代码回到移植前形态；
 - 宏同时覆盖 C / C++ 编译单元（`ggml-cpu.c` 等 C 文件同样生效）。
 
-受宏控制的代码分布：`ggml-profiler.cpp`（整文件）、`ggml-backend-impl.h`（backend 的 `profiler` 字段）、`ggml-backend.cpp`（调度层计时/收集/导出全部逻辑）、`ggml-cpu.h`（cplan 回调字段）、`ggml-cpu/ggml-cpu.{cpp,c}`（CPU 计时）、`ggml-blas/ggml-blas.cpp`（BLAS 计时）、`include/llama.h` 与 `src/llama-context.cpp`（API 与同步钩子）、`common/common.{h,cpp}` 与 `common/arg.cpp`（参数与启用）、`tools/completion` 与 `tools/server`（退出导出）。
+受宏控制的代码分布：`ggml-profiler.cpp`（整文件）、`ggml-backend-impl.h`（backend 的 `profiler` 字段）、`ggml-backend.cpp`（调度层计时/收集/导出全部逻辑）、`ggml-cpu.h`（cplan 回调字段）、`ggml-cpu/ggml-cpu.{cpp,c}`（CPU 计时）、`ggml-blas/ggml-blas.cpp`（BLAS 计时）、`ggml-cuda/common.cuh` 与 `ggml-cuda/ggml-cuda.cu`（CUDA 计时：上下文字段、逐节点事件对、graph 临时禁用、vtable 注册）、`ggml-vulkan/ggml-vulkan.cpp`（Vulkan 计时：profiler_state、query 结果转记录、vtable 注册）、`ggml-metal/ggml-metal-context.{m,h}` 与 `ggml-metal/ggml-metal-ops.{h,cpp}` 与 `ggml-metal/ggml-metal.cpp`（Metal 计时：counter 采样、单缓冲同步提交、C API 与 vtable 桥接）、`include/llama.h` 与 `src/llama-context.cpp`（API 与同步钩子）、`common/common.{h,cpp}` 与 `common/arg.cpp`（参数与启用）、`tools/completion` 与 `tools/server`（退出导出）。
 
 ## 10. 本工程移植说明
 
 - 基础设施（`ggml-profiler.h/.cpp`）、调度层、CPU / BLAS 后端、llama / common / tools 各层均按上游实现移植，并保留了本工程的定制逻辑（如 RPP 后端异步拷贝路径）。
-- CUDA / Vulkan / Metal 后端 profiler 未移植（本工程构建目标与上游差异较大，后续如需可按同一模式补充）。
+- GPU 后端 profiler 已移植（全部宏包裹）：
+  - **CUDA**：按上游 `dev-unify_profiler` 分支 1:1 移植（逐节点 `cudaEvent_t` 事件对）；针对本工程无条件启用 `USE_CUDA_GRAPH` 的差异，补充了"profiling 时临时禁用 CUDA Graphs、结束后恢复"的处理（上游该分支无此处理）。本机无 nvcc，未做编译验证；
+  - **Vulkan**：按同一上游分支 1:1 移植，复用 `vk_perf_logger` 的 timestamp query pool 基建，记录锚定提交时刻的 CPU 时间。编译与运行验证均通过（见下）；
+  - **Metal**：上游无任何分支提供参考实现，为自研方案：`MTLCounterSampleBuffer` 逐 op 采样 + 强制单命令缓冲同步提交。非 Apple 主机，未做编译验证；实现细节与已知取舍见 4.8。
+- 构建环境说明：容器内无 `glslc`（shaderc），已从 LunarG apt 仓库安装 `shaderc` 与 `vulkan-headers 1.4.313`（头文件通过 `-isystem` 前置，不覆盖发行版文件）；另提供 `cmake/glslc-wrapper.sh`（基于系统 `glslangValidator` + `spirv-opt` 的 glslc 兼容包装），无真实 glslc 时可用 `-DVulkan_GLSLC_EXECUTABLE=<wrapper>` 构建。
 - 已验证（CPU-only 构建 + Qwen2.5-0.5B 模型）：
   - `llama-completion --profile`：控制台摘要正常；
   - `--profile-output x.json / x.txt`：导出正常；
@@ -224,6 +263,11 @@ option(LLAMA_USE_PROFILER "llama: enable cross-backend profiler" ON)
   - `python3 -m tools.profiler.profiler`：分析工具正常；
   - `test-backend-ops`（1094 用例）全部通过，无运行时错误；
   - `-DLLAMA_USE_PROFILER=OFF` 完整构建通过，推理行为与移植前一致，`--profile` 选项不复存在。
+- 已验证（Vulkan 构建 + A100-PCIE-40GB + Qwen2.5-0.5B）：
+  - `-DGGML_VULKAN=ON` 完整构建通过（4 个着色器特性扩展经真实 `glslc` 检测为支持）；
+  - `llama-completion -dev vulkan0 --profile`：控制台摘要正常，backend 0（Vulkan0）逐 op 记录齐全（4075 条记录，含调度层 COPY）；
+  - `--profile-output x.json`：后端元数据（Vulkan0 device_type=1 / CPU）与记录导出正常；
+  - `GGML_PROFILE=x.txt`：无参数自动启用，文本报告分后端汇总正常（Vulkan0 99.9%）。
 
 ## 11. 快速上手
 
@@ -238,6 +282,10 @@ option(LLAMA_USE_PROFILER "llama: enable cross-backend profiler" ON)
 # 环境变量（对任何调度器应用生效）
 GGML_PROFILE=1        ./build/bin/llama-cli -m model.gguf
 GGML_PROFILE=p.json   ./build/bin/llama-cli -m model.gguf
+
+# GPU 后端（Vulkan / CUDA 构建，指定设备）
+./build_vk/bin/llama-completion -m model.gguf -dev vulkan0 --profile -p "Hello"
+./build_cuda/bin/llama-completion -m model.gguf -dev cuda0 --profile --profile-output p.json -p "Hello"
 
 # 离线分析
 python3 -m tools.profiler.profiler p.json --top-ops 10

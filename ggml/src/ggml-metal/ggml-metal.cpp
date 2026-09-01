@@ -3,6 +3,10 @@
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
+
 #include "ggml-metal-device.h"
 #include "ggml-metal-context.h"
 #include "ggml-metal-ops.h"
@@ -586,6 +590,40 @@ static ggml_guid_t ggml_backend_metal_guid(void) {
     return &guid;
 }
 
+#ifdef LLAMA_USE_PROFILER
+// Metal backend profiler implementation
+
+static void ggml_backend_metal_profiler_enable(void * context, bool enable) {
+    ggml_metal_profiler_set_enabled((ggml_metal_t)context, enable);
+}
+
+static void ggml_backend_metal_profiler_reset(void * context) {
+    ggml_metal_profiler_reset((ggml_metal_t)context);
+}
+
+static void ggml_backend_metal_profiler_set_split_id(void * context, int split_id) {
+    ggml_metal_profiler_set_split_id((ggml_metal_t)context, split_id);
+}
+
+static int ggml_backend_metal_profiler_get_records(void * context, const ggml_profile_record ** out) {
+    return ggml_metal_profiler_get_records((ggml_metal_t)context, out);
+}
+
+static void ggml_backend_metal_profiler_free_context(void * context) {
+    GGML_UNUSED(context);
+    // profiler state is owned by the Metal context and freed with it
+}
+
+static struct ggml_backend_profiler ggml_backend_metal_profiler = {
+    /* .context        = */ NULL,
+    /* .enable         = */ ggml_backend_metal_profiler_enable,
+    /* .reset          = */ ggml_backend_metal_profiler_reset,
+    /* .set_split_id   = */ ggml_backend_metal_profiler_set_split_id,
+    /* .get_records    = */ ggml_backend_metal_profiler_get_records,
+    /* .free_context   = */ ggml_backend_metal_profiler_free_context,
+};
+#endif // LLAMA_USE_PROFILER
+
 ggml_backend_t ggml_backend_metal_init(void) {
     ggml_backend_dev_t dev = ggml_backend_reg_dev_get(ggml_backend_metal_reg(), 0);
     ggml_metal_device_t ctx_dev = (ggml_metal_device_t)dev->context;
@@ -603,7 +641,16 @@ ggml_backend_t ggml_backend_metal_init(void) {
         /* .interface = */ ggml_backend_metal_i,
         /* .device    = */ dev,
         /* .context   = */ ctx,
+#ifdef LLAMA_USE_PROFILER
+        /* .profiler  = */ nullptr,
+#endif
     };
+
+#ifdef LLAMA_USE_PROFILER
+    // Set up profiler for Metal backend
+    ggml_backend_metal_profiler.context = ctx;
+    ggml_backend_set_profiler(backend, &ggml_backend_metal_profiler);
+#endif
 
     ggml_backend_metal_set_n_cb(backend, 1);
 

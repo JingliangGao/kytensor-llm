@@ -3,6 +3,9 @@
 #include "ggml.h"
 #include "ggml-impl.h"
 #include "ggml-cuda.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 
 #include <cstdint>
 #include <memory>
@@ -1359,6 +1362,14 @@ struct ggml_backend_cuda_context {
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES] = {nullptr};
 
     int curr_stream_no = 0;
+
+#ifdef LLAMA_USE_PROFILER
+    bool                             profiling_enabled   = false;
+    int                              profiling_split_id  = 0;
+    std::vector<ggml_profile_record> profiling_records;
+    cudaEvent_t                      profiling_start_event = nullptr;
+    cudaEvent_t                      profiling_end_event   = nullptr;
+#endif
 
 #ifdef USE_CUDA_GRAPH
     // Map from first_node_ptr to cuda_graph - allows multiple graphs per context

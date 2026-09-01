@@ -26,6 +26,11 @@ int ggml_metal_op_n_nodes(ggml_metal_op_t ctx);
 
 int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx);
 
+#ifdef LLAMA_USE_PROFILER
+// get the node at index idx (for the unified profiler)
+const struct ggml_tensor * ggml_metal_op_node(ggml_metal_op_t ctx, int idx);
+#endif
+
 //
 // available ops:
 //

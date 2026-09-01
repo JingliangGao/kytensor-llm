@@ -1,6 +1,5 @@
-# ROCm path detection
-# Honor an explicit ROCM_PATH env var first, then search the Kylin candidate paths.
-set(ROCM_PATH_CANDIDATES /opt/rocm-7.1.0 /opt/system/local/rocm-7.1.0 /usr/local/rocm-7.1.0 /opt/rocm)
+# initial variables
+set(ROCM_PATH_CANDIDATES "")
 set(ROCM_PATH "")
 
 
@@ -93,11 +92,7 @@ if(UNIX AND NOT APPLE)
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=bfd")
     set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -fuse-ld=bfd")
 
-    # DTK 运行时库 (libhipblas/librocblas 等) 自带的 RUNPATH 指向 DTK 的
-    # 标准安装路径 /opt/dtk-26.04/lib，但本机实际安装在 /home/kylin/lyz/dtk-26.04。
-    # RUNPATH (DT_RUNPATH) 不会传递给传递依赖，导致 libhipblas.so 找不到它自己
-    # 的依赖 librocblas.so.4 / librocsolver.so.0。改用旧式 RPATH (DT_RPATH)，
-    # 它会传递给整个依赖链，使 libggml-dtk.so 的 RPATH 能解析所有传递依赖。
+    # DTK RUNPATH should be passed to build chain
     set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} -Wl,--disable-new-dtags")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--disable-new-dtags")
     set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,--disable-new-dtags")
@@ -235,10 +230,12 @@ set_target_properties(ggml-dtk PROPERTIES
     INSTALL_RPATH "${ROCM_PATH}/lib"
     BUILD_WITH_INSTALL_RPATH TRUE)
 
+# fix: for DTK, GGML_CUDA_FORCE_MMQ must be ON
+add_compile_definitions(GGML_CUDA_FORCE_MMQ)
 
-if (GGML_CUDA_FORCE_MMQ)
-    add_compile_definitions(GGML_CUDA_FORCE_MMQ)
-endif()
+# if (GGML_CUDA_FORCE_MMQ)
+#   add_compile_definitions(GGML_CUDA_FORCE_MMQ)
+# endif()
 
 if (GGML_CUDA_FORCE_CUBLAS)
     add_compile_definitions(GGML_CUDA_FORCE_CUBLAS)
@@ -248,9 +245,10 @@ if (GGML_CUDA_NO_PEER_COPY)
     add_compile_definitions(GGML_CUDA_NO_PEER_COPY)
 endif()
 
-if (GGML_HIP_GRAPHS)
-    add_compile_definitions(GGML_HIP_GRAPHS)
-endif()
+# fix: for DTK, GGML_HIP_GRAPHS must be OFF
+# if (GGML_HIP_GRAPHS)
+#     add_compile_definitions(GGML_HIP_GRAPHS)
+# endif()
 
 if (GGML_HIP_NO_VMM)
     add_compile_definitions(GGML_HIP_NO_VMM)
@@ -260,9 +258,12 @@ if (GGML_HIP_ROCWMMA_FATTN)
     add_compile_definitions(GGML_HIP_ROCWMMA_FATTN)
 endif()
 
-if (NOT GGML_HIP_MMQ_MFMA)
-    add_compile_definitions(GGML_HIP_NO_MMQ_MFMA)
-endif()
+# fix: for DTK, GGML_HIP_MMQ_MFMA must be OFF
+add_compile_definitions(GGML_HIP_NO_MMQ_MFMA)
+
+# if (NOT GGML_HIP_MMQ_MFMA)
+#   add_compile_definitions(GGML_HIP_NO_MMQ_MFMA)
+# endif()
 
 if (GGML_HIP_RCCL)
     add_compile_definitions(GGML_USE_NCCL) # RCCL has the same interface as NCCL.

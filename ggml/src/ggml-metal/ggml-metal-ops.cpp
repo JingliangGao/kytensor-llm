@@ -144,6 +144,15 @@ int ggml_metal_op_n_nodes(ggml_metal_op_t ctx) {
     return ctx->n_nodes();
 }
 
+#ifdef LLAMA_USE_PROFILER
+const struct ggml_tensor * ggml_metal_op_node(ggml_metal_op_t ctx, int idx) {
+    if (idx < 0 || idx >= ctx->n_nodes()) {
+        return nullptr;
+    }
+    return ctx->node(idx);
+}
+#endif
+
 static bool ggml_metal_op_concurrency_reset(ggml_metal_op_t ctx) {
     if (!ctx->mem_ranges) {
         return true;
