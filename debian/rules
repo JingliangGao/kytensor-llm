@@ -22,28 +22,6 @@ else
     CXXFLAGS = "-I/opt/system/resource/xpu/houmo"
 endif
 
-
-# check DTK_DIR whether exists
-DTK_DIR=/opt/dtk-26.04
-ifeq ($(DTK_ENABLE),ON)
-	ifeq ($(strip $(DTK_DIR)),)
-		$(error DTK_ENABLE is ON but DTK_DIR is empty. Please set DTK_DIR to a valid DTK installation path.)
-	endif
-
-	ifeq ($(wildcard $(DTK_DIR)),)
-		$(error DTK_ENABLE is ON but DTK_DIR path '$(DTK_DIR)' does not exist. Please set DTK_DIR to a valid DTK installation path.)
-	endif
-
-	DCU_CONFIG=-DAMDGPU_TARGETS=gfx928 \
-    	-DGGML_CUDA_FORCE_MMQ=ON \
-    	-DGGML_HIP_MMQ_MFMA=OFF \
-    	-DGGML_HIP_GRAPHS=OFF \
-    	-DLLAMA_DTK=$(DTK_ENABLE) \
-    	-DDTK_PATH=$(DTK_DIR) \
-    	-DLLAMA_BUILD_TESTS=OFF \
-    	-DGGML_BUILD_TESTS=OFF
-endif
-
 # see FEATURE AREAS in dpkg-buildflags(1)
 #export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
@@ -80,7 +58,7 @@ override_dh_auto_configure:
 		-DGGML_PONN=OFF \
 		-DGGML_RPP=OFF \
 		-DGGML_RPP_USE_DFS=OFF \
-		$(DCU_CONFIG) \
+		-DGGML_DTK=$(DTK_ENABLE) \
 		-DGGML_VULKAN=OFF
 
 override_dh_auto_build:
