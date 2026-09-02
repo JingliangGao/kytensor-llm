@@ -803,48 +803,49 @@ class ProfileData:
         # --- HTML ---
         html = (
             '<!DOCTYPE html>\n<html><head><meta charset="utf-8">'
-            '<title>ggml Profiler</title>\n<style>\n'
+            '<title>Kylin Profiler</title>\n<style>\n'
             '*{margin:0;padding:0;box-sizing:border-box}\n'
-            'body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#eee;'
+            'body{font-family:system-ui,sans-serif;background:#f5f6f8;color:#222;'
             'display:flex;flex-direction:column;height:100vh;overflow:hidden}\n'
-            '#hd{background:#16213e;padding:8px 16px;display:flex;align-items:center;'
-            'gap:16px;border-bottom:1px solid #0f3460;flex-shrink:0}\n'
+            '#hd{background:#ffffff;padding:8px 16px;display:flex;align-items:center;'
+            'gap:16px;border-bottom:1px solid #d8dee9;flex-shrink:0}\n'
             '#hd h1{font-size:15px;color:#e94560}\n'
             '#hd .st{font-size:11px;color:#888}\n'
-            '#tb{background:#16213e;padding:6px 16px;border-bottom:1px solid #0f3460;'
+            '#tb{background:#ffffff;padding:6px 16px;border-bottom:1px solid #d8dee9;'
             'display:flex;align-items:center;gap:6px;flex-shrink:0}\n'
-            '#tb button{background:#0f3460;color:#eee;border:none;padding:5px 12px;'
+            '#tb button{background:#e8ebf0;color:#333;border:none;padding:5px 12px;'
             'cursor:pointer;border-radius:3px;font-size:11px}\n'
             '#tb button:hover{background:#e94560}\n'
             '#vi{font-size:10px;color:#888;margin-left:auto}\n'
             '#main{flex:1;display:flex;flex-direction:column;overflow:hidden}\n'
             '#cw{flex-shrink:0;overflow:hidden;position:relative}\n'
             '#c{display:block}\n'
-            '#stats{flex:1;overflow-y:auto;background:#1a1a2e;border-top:1px solid #0f3460}\n'
+            '#stats{flex:1;overflow-y:auto;background:#ffffff;border-top:1px solid #d8dee9}\n'
             '#stats table{width:100%;border-collapse:collapse;font-size:11px}\n'
             '#stats thead{position:sticky;top:0;z-index:1}\n'
-            '#stats th{text-align:left;padding:6px 10px;color:#888;background:#16213e;'
-            'border-bottom:1px solid #0f3460;font-weight:normal;font-size:10px;'
+            '#stats th{text-align:left;padding:6px 10px;color:#888;background:#f0f2f6;'
+            'border-bottom:1px solid #d8dee9;font-weight:normal;font-size:10px;'
             'text-transform:uppercase;letter-spacing:0.5px}\n'
             '#stats th.r{text-align:right}\n'
-            '#stats td{padding:4px 10px;border-bottom:1px solid rgba(15,52,96,0.4)}\n'
+            '#stats td{padding:4px 10px;border-bottom:1px solid rgba(0,0,0,0.06)}\n'
             '#stats td.r{text-align:right;font-variant-numeric:tabular-nums;font-family:monospace,system-ui}\n'
-            '#stats .l0 td{background:rgba(30,30,54,0.6)}\n'
-            '#stats .l0:hover td{background:rgba(40,40,70,0.8)}\n'
-            '#stats .l1:hover td,.l2:hover td{background:rgba(35,35,60,0.5)}\n'
+            '#stats .l0 td{background:rgba(0,0,0,0.025)}\n'
+            '#stats .l0:hover td{background:rgba(0,0,0,0.07)}\n'
+            '#stats .l1:hover td,.l2:hover td{background:rgba(0,0,0,0.045)}\n'
             '#stats .tog{cursor:pointer;user-select:none;color:#666;'
             'width:16px;display:inline-block;text-align:center;font-size:9px}\n'
             '#stats .tog:hover{color:#e94560}\n'
             '#stats .pct-cell{position:relative}\n'
             '#stats .pct-bg{position:absolute;left:0;top:1px;bottom:1px;border-radius:2px;pointer-events:none}\n'
             '#stats .pct-tx{position:relative}\n'
-            '#tt{position:fixed;background:#16213e;border:1px solid #e94560;'
+            '#tt{position:fixed;background:#ffffff;border:1px solid #e94560;'
             'padding:10px;border-radius:5px;font-size:11px;display:none;'
-            'z-index:100;pointer-events:none;max-width:280px;line-height:1.6}\n'
-            '#lg{background:#16213e;padding:6px 16px;border-top:1px solid #0f3460;'
-            'font-size:10px;flex-shrink:0}\n'
+            'z-index:100;pointer-events:none;max-width:280px;line-height:1.6;'
+            'box-shadow:0 2px 8px rgba(0,0,0,0.15)}\n'
+            '#lg{background:#ffffff;padding:6px 16px;border-top:1px solid #d8dee9;'
+            'font-size:10px;flex-shrink:0;color:#555}\n'
             '</style></head><body>\n'
-            '<div id="hd"><h1>ggml Profiler Timeline</h1>'
+            '<div id="hd"><h1>Kylin Profiler Timeline</h1>'
             '<span class="st">' + header_stats + '</span></div>\n'
             '<div id="tb">'
             '<button onclick="fitAll()">Fit</button>'
@@ -942,7 +943,7 @@ function buildMinimap(){
   mmCanvas.height=Math.round(MINIMAP_H*dpr);
   var mc=mmCanvas.getContext('2d');
   mc.scale(dpr,dpr);
-  mc.fillStyle='#0d1117';
+  mc.fillStyle='#e8ebf0';
   mc.fillRect(0,0,canvasW,MINIMAP_H);
   var mmScale=canvasW/TOTAL_US;
   for(var li=0;li<LANE_IDS.length;li++){
@@ -978,7 +979,7 @@ function render(){
   ctx.fillRect(vpX,1,Math.max(2,vpW),MINIMAP_H-2);
 
   // Time axis background
-  ctx.fillStyle='#12122a';
+  ctx.fillStyle='#f0f2f6';
   ctx.fillRect(LABEL_W,MINIMAP_H,viewW,AXIS_H);
 
   // Time axis ticks
@@ -989,7 +990,7 @@ function render(){
     var iv;if(raw/mag<2)iv=2*mag;else if(raw/mag<5)iv=5*mag;else iv=10*mag;
     var firstTick=Math.ceil(visStart/iv)*iv;
     ctx.fillStyle='#555';ctx.font='9px monospace';
-    ctx.strokeStyle='rgba(255,255,255,0.06)';ctx.lineWidth=1;
+    ctx.strokeStyle='rgba(0,0,0,0.06)';ctx.lineWidth=1;
     for(var t=firstTick;t<=visEnd;t+=iv){
       var tx=LABEL_W+(t-offsetUs)*scale;
       ctx.beginPath();ctx.moveTo(tx,TOP_PAD);ctx.lineTo(tx,canvasH);ctx.stroke();
@@ -1003,7 +1004,7 @@ function render(){
     var y=TOP_PAD+li*LANE_H;
 
     // Background
-    ctx.fillStyle=li%2===0?'#1a1a2e':'#1c1c34';
+    ctx.fillStyle=li%2===0?'#ffffff':'#f3f5f8';
     ctx.fillRect(LABEL_W,y,viewW,LANE_H);
 
     // Events (clipped to event area)
@@ -1039,23 +1040,23 @@ function render(){
       var hw=hoveredEv.d*scale;
       ctx.save();
       ctx.beginPath();ctx.rect(LABEL_W,y,viewW,LANE_H);ctx.clip();
-      ctx.strokeStyle='#fff';ctx.lineWidth=2;
+      ctx.strokeStyle='#e94560';ctx.lineWidth=2;
       ctx.strokeRect(hx-1,y+2,Math.max(3,hw+2),LANE_H-4);
       ctx.restore();
     }
 
     // Lane separator
-    ctx.strokeStyle='#0f3460';ctx.lineWidth=0.5;
+    ctx.strokeStyle='#d8dee9';ctx.lineWidth=0.5;
     ctx.beginPath();ctx.moveTo(0,y+LANE_H-0.5);ctx.lineTo(canvasW,y+LANE_H-0.5);ctx.stroke();
 
     // Label background + text
-    ctx.fillStyle='#16213e';ctx.fillRect(0,y,LABEL_W,LANE_H);
-    ctx.fillStyle='#ccc';ctx.font='11px system-ui';
+    ctx.fillStyle='#f0f2f6';ctx.fillRect(0,y,LABEL_W,LANE_H);
+    ctx.fillStyle='#444';ctx.font='11px system-ui';
     ctx.fillText(BACKENDS[bid]||('B'+bid),8,y+LANE_H/2+4);
   }
 
   // Axis label area background (covers labels column in axis row)
-  ctx.fillStyle='#16213e';ctx.fillRect(0,MINIMAP_H,LABEL_W,AXIS_H);
+  ctx.fillStyle='#f0f2f6';ctx.fillRect(0,MINIMAP_H,LABEL_W,AXIS_H);
   ctx.fillStyle='#666';ctx.font='9px monospace';ctx.fillText('Time',8,MINIMAP_H+AXIS_H-4);
 
   // View info

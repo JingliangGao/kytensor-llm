@@ -60,5 +60,6 @@ GGML_PROFILE=p.json   ./build_${BACKEND_NAME}/bin/llama-cli -m model.gguf
 
 # 离线分析
 python3 -m tools.profiler.profiler p.json --top-ops 10
+python3 -m tools.profiler.profiler p.json --chrome-trace trace.json
 python3 -m tools.profiler.profiler p.json --html-viewer timeline.html
 ```
