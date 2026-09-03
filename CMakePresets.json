@@ -81,6 +81,15 @@
         }
     },
 
+    {
+        "name": "x64-linux-cuda-profiler-debug",
+        "inherits": [ "base", "debug" ],
+        "cacheVariables": {
+            "GGML_CUDA": "ON",
+            "LLAMA_USE_PROFILER": "ON"
+        }
+    },
+
     { "name": "arm64-windows-llvm-debug", "inherits": [ "base", "arm64-windows-llvm", "debug" ] },
     { "name": "arm64-windows-llvm-release", "inherits": [ "base", "arm64-windows-llvm", "reldbg" ] },
     { "name": "arm64-windows-llvm+static-release", "inherits": [ "base", "arm64-windows-llvm", "reldbg", "static" ] },
