@@ -974,12 +974,14 @@ int main(int argc, char ** argv) {
     }
 
 #ifdef LLAMA_USE_PROFILER
-    // Export profiling data if profiling was enabled
+    // Export profiling data if profiling was enabled. The file export embeds
+    // the function-level spans ("fn_records") together with the op-level data.
     if (params.profiling) {
         ggml_backend_sched_t sched = llama_context_get_sched(ctx);
         if (sched != nullptr) {
             if (params.profiling_output.empty()) {
                 ggml_backend_sched_print_profiling(sched);
+                ggml_fn_profiler_print_summary();
             } else {
                 const std::string & path = params.profiling_output;
                 int ret;

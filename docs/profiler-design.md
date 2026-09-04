@@ -205,11 +205,15 @@ if (params.profiling) {
 
 ### 7.3 JSON（机器可读）
 
-包含格式版本、后端元数据数组、全部原始记录（起止纳秒、字节、形状、步幅、类型、算子参数等）。配套分析工具 `tools/profiler/profiler.py` 可生成：
+包含格式版本（v4）、后端元数据数组、全部原始记录（起止纳秒、字节、形状、步幅、类型、算子参数等），
+以及函数级数据：`fn_total_records`、`fn_records`（name/start_ns/end_ns/pid/tid，与算子级共用
+`ggml_profiler_time_ns()` 时间基准）、`fn_threads`（tid → 线程名）。配套分析工具
+`tools/profiler/profiler.py` 可生成：
 
-- top ops / top kernels / 低效算子排名；
+- top ops / top kernels / 低效算子排名、函数级聚合排名（`--top-fns`）；
 - 自包含交互式 HTML 时间线；
-- Chrome Trace 格式（可用 `chrome://tracing` 或 Perfetto 打开）。
+- Chrome Trace 格式（可用 `chrome://tracing` 或 Perfetto 打开），算子级与函数级两条时间线
+  合并在同一 trace 中（函数级为独立进程泳道，嵌套 span 呈调用栈视图）。
 
 ---
 
@@ -279,7 +283,9 @@ option(LLAMA_USE_PROFILER "llama: enable cross-backend profiler" ON)
 ./build/bin/llama-completion -m model.gguf --profile --profile-output p.json -p "Hello"
 ./build/bin/llama-completion -m model.gguf --profile --profile-output p.txt  -p "Hello"
 
-# 环境变量（对任何调度器应用生效）
+# 环境变量（统一开关：GGML_PROFILE 同时开启算子级 + 函数级，对任何调度器应用生效）
+# GGML_PROFILE=1      -> 退出时打印两套汇总（算子级 + 函数级）
+# GGML_PROFILE=p.json -> 算子级记录 + 函数级 fn_records 一并导出到 p.json（单文件）
 GGML_PROFILE=1        ./build/bin/llama-cli -m model.gguf
 GGML_PROFILE=p.json   ./build/bin/llama-cli -m model.gguf
 
@@ -289,5 +295,97 @@ GGML_PROFILE=p.json   ./build/bin/llama-cli -m model.gguf
 
 # 离线分析
 python3 -m tools.profiler.profiler p.json --top-ops 10
+python3 -m tools.profiler.profiler p.json --top-fns 10          # 函数级聚合排名
+python3 -m tools.profiler.profiler p.json --chrome-trace trace.json   # 算子级 + 函数级合并时间线
 python3 -m tools.profiler.profiler p.json --html-viewer timeline.html
 ```
+
+函数级（调用栈）profiler：
+
+```bash
+# 随 --profile 一并开启；函数级数据（fn_records）与算子级合并写入同一份输出文件
+./build/bin/llama-completion -m model.gguf --profile --profile-output p.json -p "Hello"
+
+# 不给输出路径 -> 退出时打印两套汇总（算子级 + 函数级）到 stdout
+./build/bin/llama-completion -m model.gguf --profile -p "Hello"
+
+# 环境变量方式：GGML_PROFILE 为统一开关（见上），同样单文件导出
+GGML_PROFILE_MAX=5000000    # 可选：调整函数级记录条数上限（默认 2000000）
+```
+
+---
+
+## 12. 函数级 Profiler（调用栈追踪）
+
+算子级 profiler 回答"时间花在哪个算子/后端上"，但对计算图之外的框架逻辑（decode 流程、
+KV cache 维护、采样、分词、调度开销等）没有覆盖。函数级 profiler 补齐这一层：
+类似 PyTorch profiler 的 `RECORD_FUNCTION`，对推理路径上的关键 C++ 函数记录
+**起始时间戳、耗时、进程号（pid）、线程号（tid）**，嵌套作用域自动还原出调用栈。
+
+### 12.1 实现机制
+
+- 插桩方式：RAII 作用域宏 `GGML_PROFILE_FUNC("name")`（声明于 `ggml-profiler.h` 的 C++ 段）。
+  `LLAMA_USE_PROFILER` 未定义时宏展开为空，参与编译的代码为零。
+- 记录内容：`name`（静态字符串指针，零拷贝）、`start_ns` / `end_ns`（与
+  `ggml_profiler_time_ns()` 同一 epoch，与算子级记录时间轴可对齐）、`pid`、`tid`。
+- 导出格式：与算子级合并为**同一份输出**（不再单独派生文件）：
+  - JSON：以 `fn_records`（name/start_ns/end_ns/pid/tid）与 `fn_threads`（线程名）字段
+    嵌入算子级导出（v4 格式），由 `ggml_fn_profiler_write_records_json` /
+    `ggml_fn_profiler_write_threads_json` 写入；
+  - 文本报告：末尾追加函数级汇总段（`ggml_fn_profiler_write_summary`）；
+  - stdout：分别打印算子级与函数级两套汇总。
+  离线侧由 `tools/profiler/profiler.py --chrome-trace` 将两级数据合并为一条
+  Chrome Trace 时间线（`chrome://tracing` / `https://ui.perfetto.dev` 打开，
+  嵌套 span 自动呈现为调用栈/火焰图视图）。
+
+### 12.2 低开销设计
+
+| 手段 | 效果 |
+|------|------|
+| `LLAMA_USE_PROFILER=OFF` 编译 | 宏展开为空，零开销 |
+| 运行时未启用 | 宏内联读一次导出的 `std::atomic<bool>`（relaxed）即返回，约 2-5 ns/插桩点 |
+| 运行时启用 | 每作用域 2 次 `clock_gettime`（vDSO）+ thread_local vector 追加，约 60-120 ns |
+| 线程局部缓冲 | 记录写入不持锁；互斥锁仅在线程首次注册与导出时使用 |
+| pid / tid 缓存 | 进程级缓存一次 `getpid()`；每线程缓存一次 `gettid()`，之后无系统调用 |
+| 记录上限 | 默认 200 万条（`GGML_PROFILE_MAX` 可调）；超限自动全局停用并告警，已打开的作用域仍正常闭合，栈保持平衡 |
+
+实测（CPU-only，Qwen2.5-0.5B q4_k_m，256 tokens，交替 A/B）：
+函数级启用 114.10 / 118.83 t/s，未启用 114.63 / 109.87 t/s —— 差异在噪声范围内（理论值 < 0.01%）。
+
+### 12.3 插桩点（推理主路径）
+
+| 层 | 函数 | span 名 |
+|----|------|---------|
+| llama 层 | `llama_decode` / `llama_encode` | `llama_decode` / `llama_encode` |
+| llama 层 | `llama_context::decode` / `encode` | `llama_context::decode` / `encode` |
+| llama 层 | `llama_context::process_ubatch`（每 ubatch 建图+计算） | `llama_context::process_ubatch` |
+| llama 层 | `llama_context::graph_compute` | `llama_context::graph_compute` |
+| llama 层 | `llama_context::memory_update`（KV cache defrag/shift） | `llama_context::memory_update` |
+| 采样 | `llama_sampler_sample` | `llama_sampler_sample` |
+| 分词 | `llama_tokenize` / `llama_detokenize` | `llama_tokenize` / `llama_detokenize` |
+| ggml 调度层 | `ggml_backend_sched_alloc_graph`、`ggml_backend_sched_graph_compute(_async)` | 同名 |
+
+### 12.4 使能与导出
+
+- `--profile`：在 `common_init` 中同时开启算子级与函数级（`ggml_fn_profiler_enable(true)`）。
+- `--profile-output FNAME`：两级数据合并导出到同一份文件（JSON 内含 `fn_records` /
+  `fn_threads`，文本报告末尾追加函数级汇总）；未指定时退出打印算子级 + 函数级两套汇总。
+- `GGML_PROFILE` 为统一开关：库加载时自动启用函数级；值为路径时函数级数据随算子级
+  自动导出一并写入该文件（调度器释放时完成，无需额外参数）；值为 `1`/`stdout` 时
+  退出打印函数级汇总（经 `atexit`），对任何链接本库的应用免改代码生效。
+- `tools/server` 主循环退出时执行与 `llama-completion` 相同的导出逻辑。
+- 代码分布（均受 `LLAMA_USE_PROFILER` 宏控制）：`ggml-profiler.h`（C API、RAII guard、宏）、
+  `ggml-profiler.cpp`（线程局部收集器、注册表、汇总、嵌入导出、环境变量支持）、
+  `src/llama-context.cpp`、`src/llama-sampler.cpp`、`src/llama-vocab.cpp`、
+  `ggml/src/ggml-backend.cpp`（插桩 + 合并导出）、
+  `common/{common.h,common.cpp,arg.cpp}`（参数与使能）、`tools/{completion,server}`（导出入口）、
+  `tools/profiler/profiler.py`（离线分析）。
+
+### 12.5 与算子级 profiler 的关系
+
+两者时间源相同（`CLOCK_MONOTONIC_RAW`），且自 v4 格式起导出为**同一份文件**：
+算子级为主体记录（`records`），函数级以 `fn_records` / `fn_threads` 字段嵌入。
+由于共用 `ggml_profiler_time_ns()` epoch，函数级的
+`ggml_backend_sched_graph_compute_async` span 与算子级时间线天然对齐；
+`tools/profiler/profiler.py --chrome-trace` 将两条时间线合并为同一
+Chrome Trace 视图（函数级为独立进程泳道，嵌套 span 呈调用栈）。

@@ -13,6 +13,9 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 #include "gguf.h"
 
 #include <algorithm>
@@ -431,6 +434,10 @@ struct llama_model * llama_load_model_from_file(
 struct llama_model * llama_model_load_from_file(
         const char * path_model,
         struct llama_model_params params) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_model_load_from_file");
+#endif
+
     std::vector<std::string> splits = {};
     return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, /*file*/ nullptr, params);
 }

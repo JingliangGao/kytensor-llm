@@ -6,6 +6,9 @@
 #include "reasoning-budget.h"
 
 #include "ggml.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -526,6 +529,9 @@ struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl) {
 }
 
 llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_context * ctx, int idx, bool grammar_first) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("common_sampler_sample");
+#endif
     llama_synchronize(ctx);
 
     // start measuring sampling time after the llama_context synchronization in order to not measure any ongoing async operations

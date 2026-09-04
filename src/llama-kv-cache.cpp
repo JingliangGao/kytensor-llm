@@ -5,6 +5,10 @@
 #include "llama-model.h"
 #include "llama-context.h"
 
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -1148,6 +1152,10 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
 }
 
 bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_copy_info & sc_info) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_kv_cache::update");
+#endif
+
     bool updated = false;
 
     auto * sched = lctx->get_sched();
@@ -1423,6 +1431,10 @@ llama_kv_cache::slot_info llama_kv_cache::find_slot(const llama_ubatch & ubatch,
 }
 
 void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_kv_cache::apply_ubatch");
+#endif
+
     // keep track of the max sequence position that we would overwrite with this ubatch
     // for non-SWA cache, this would be always empty
     llama_seq_id seq_pos_max_rm[LLAMA_MAX_SEQ];

@@ -129,6 +129,119 @@ GGML_API int ggml_backend_sched_export_profiling_text(ggml_backend_sched_t sched
 // Export profiling data as plain text statistics to a FILE pointer
 GGML_API int ggml_backend_sched_write_profiling_text(ggml_backend_sched_t sched, FILE * fp);
 
+//
+// Function-level profiler (call-stack tracing, PyTorch-profiler style)
+//
+// Records timed spans for C/C++ functions involved in inference. Each record
+// contains the function name, start/end timestamps (monotonic ns, same epoch
+// as ggml_profiler_time_ns), process id and thread id. Nested scopes form a
+// call stack.
+//
+// Enabling:
+//   - GGML_PROFILE (environment variable, unified switch): enables both the
+//     op-level and this function-level profiler at load time. All data is
+//     written to a single output file:
+//       GGML_PROFILE=1|stdout -> print both summaries at exit
+//       GGML_PROFILE=path     -> op-level records + function-level spans
+//                                ("fn_records") exported together to path
+//   - ggml_fn_profiler_enable(): runtime switch (used by the --profile CLI
+//     flag); export happens through the ggml-backend profiling export.
+//
+// Overhead:
+//   - LLAMA_USE_PROFILER compiled out        -> zero
+//   - compiled in, profiling disabled        -> one relaxed atomic load per scope (~2-5 ns)
+//   - compiled in, profiling enabled         -> ~2 clock reads + lock-free thread-local append
+//
+
+// A single function span record. The name is a pointer to a static string
+// (the instrumentation sites pass string literals), so recording a scope
+// does not require copying any string data.
+struct ggml_fn_profile_record {
+    const char * name;
+    uint64_t     start_ns; // ggml_profiler_time_ns() epoch
+    uint64_t     end_ns;   // 0 while the scope is still open
+    int32_t      pid;
+    int32_t      tid;
+};
+
+// Runtime on/off switch (see also the GGML_PROFILE environment variable, the
+// unified switch that enables both the op-level and this function-level
+// profiler at load time)
+GGML_API void ggml_fn_profiler_enable(bool enable);
+GGML_API bool ggml_fn_profiler_is_enabled(void);
+
+// Clear all recorded data
+GGML_API void ggml_fn_profiler_reset(void);
+
+// Begin/end a named scope. The name must be a string with static lifetime
+// (a string literal is fine); it is stored by pointer, never copied.
+// Returns true if the record was actually pushed (profiler enabled and the
+// record limit was not reached). Use the GGML_PROFILE_FUNC macro in C++.
+GGML_API bool ggml_fn_profiler_scope_begin(const char * name);
+GGML_API void ggml_fn_profiler_scope_end(void);
+
+// Total number of records collected across all threads
+GGML_API int64_t ggml_fn_profiler_get_n_records(void);
+
+// Print a human-readable summary (aggregated by function name) to stdout
+GGML_API void ggml_fn_profiler_print_summary(void);
+
+// Embed the function-level spans into the ggml-backend profiling export.
+//   write_records_json: writes the records as JSON array elements (scopes
+//                       that are still open are closed at the current time)
+//   write_summary:      writes the aggregated human-readable summary
+// Both are used by ggml_backend_sched_write_profiling_json/text so that one
+// file contains op-level and function-level data. Returns 0 on success.
+GGML_API int  ggml_fn_profiler_write_records_json(FILE * fp);
+GGML_API int  ggml_fn_profiler_write_threads_json(FILE * fp);
+GGML_API void ggml_fn_profiler_write_summary(FILE * fp);
+
 #ifdef __cplusplus
 }
 #endif
+
+#ifdef __cplusplus
+
+#ifdef LLAMA_USE_PROFILER
+
+#include <atomic>
+
+// Runtime switch, exported so that GGML_PROFILE_FUNC can check it inline
+// without a function call (single relaxed load through the GOT)
+GGML_API std::atomic<bool> ggml_fn_profiler_enabled;
+
+// RAII scope guard: records one timed span
+struct ggml_fn_profile_scope {
+    bool active = false;
+
+    ggml_fn_profile_scope(const char * name) {
+        if (ggml_fn_profiler_enabled.load(std::memory_order_relaxed)) {
+            active = ggml_fn_profiler_scope_begin(name);
+        }
+    }
+
+    ~ggml_fn_profile_scope() {
+        if (active) {
+            ggml_fn_profiler_scope_end();
+        }
+    }
+
+    ggml_fn_profile_scope(const ggml_fn_profile_scope &)            = delete;
+    ggml_fn_profile_scope & operator=(const ggml_fn_profile_scope &) = delete;
+};
+
+#define GGML_FN_PROFILER_CONCAT_IMPL(a, b) a##b
+#define GGML_FN_PROFILER_CONCAT(a, b) GGML_FN_PROFILER_CONCAT_IMPL(a, b)
+
+// Instrument the enclosing function scope, e.g.:
+//   GGML_PROFILE_FUNC("llama_context::decode");
+#define GGML_PROFILE_FUNC(name) \
+    ggml_fn_profile_scope GGML_FN_PROFILER_CONCAT(ggml_fn_profiler_scope_, __LINE__)(name)
+
+#else // LLAMA_USE_PROFILER
+
+#define GGML_PROFILE_FUNC(name)
+
+#endif // LLAMA_USE_PROFILER
+
+#endif // __cplusplus

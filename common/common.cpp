@@ -1306,6 +1306,8 @@ common_init_result::common_init_result(common_params & params) :
             ggml_backend_sched_set_profiling(sched, true);
             LOG_INF("%s: profiling enabled (%s)\n", __func__, params.model.path.c_str());
         }
+        ggml_fn_profiler_enable(true);
+        LOG_INF("%s: function-level profiling enabled\n", __func__);
     }
 #endif
 

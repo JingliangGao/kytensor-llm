@@ -12,7 +12,9 @@
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
 #include "ggml-impl.h"
+#ifdef LLAMA_USE_PROFILER
 #include "ggml-profiler.h"
+#endif
 
 #include <assert.h>
 #include <limits.h>
@@ -455,6 +457,10 @@ enum ggml_status ggml_backend_graph_plan_compute(ggml_backend_t backend, ggml_ba
 }
 
 enum ggml_status ggml_backend_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("ggml_backend_graph_compute");
+#endif
+
     enum ggml_status err = ggml_backend_graph_compute_async(backend, cgraph);
     ggml_backend_synchronize(backend);
     return err;
@@ -2131,6 +2137,10 @@ bool ggml_backend_sched_reserve(ggml_backend_sched_t sched, struct ggml_cgraph *
 }
 
 bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("ggml_backend_sched_alloc_graph");
+#endif
+
     GGML_ASSERT(sched);
     GGML_ASSERT((int)sched->hash_set.size >= graph->n_nodes + graph->n_leafs);
     GGML_ASSERT(!sched->is_alloc);
@@ -2150,12 +2160,20 @@ bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgra
 }
 
 enum ggml_status ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("ggml_backend_sched_graph_compute");
+#endif
+
     enum ggml_status err = ggml_backend_sched_graph_compute_async(sched, graph);
     ggml_backend_sched_synchronize(sched);
     return err;
 }
 
 enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("ggml_backend_sched_graph_compute_async");
+#endif
+
     GGML_ASSERT(sched);
     if (!sched->is_reset && !sched->is_alloc) {
         ggml_backend_sched_reset(sched);
@@ -2171,6 +2189,10 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
 }
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("ggml_backend_sched_synchronize");
+#endif
+
     GGML_ASSERT(sched);
     for (int i = 0; i < sched->n_backends; i++) {
         ggml_backend_synchronize(sched->backends[i]);
@@ -2782,7 +2804,7 @@ int ggml_backend_sched_write_profiling_json(ggml_backend_sched_t sched, FILE * f
     }
 
     fprintf(fp, "{\n");
-    fprintf(fp, "  \"version\": 3,\n");
+    fprintf(fp, "  \"version\": 4,\n");
     fprintf(fp, "  \"profiler\": \"ggml\",\n");
     fprintf(fp, "  \"total_records\": %d,\n", (int) sched->profiling_records.size());
     fprintf(fp, "  \"total_ns\": %llu,\n", (unsigned long long) total_ns);
@@ -2873,6 +2895,16 @@ int ggml_backend_sched_write_profiling_json(ggml_backend_sched_t sched, FILE * f
         fprintf(fp, "}%s\n", (i < (int) sched->profiling_records.size() - 1) ? "," : "");
     }
 
+    fprintf(fp, "  ],\n");
+
+    // Function-level (call-stack) spans, embedded in the same file as the
+    // op-level records. Timestamps share the ggml_profiler_time_ns() epoch.
+    fprintf(fp, "  \"fn_total_records\": %lld,\n", (long long) ggml_fn_profiler_get_n_records());
+    fprintf(fp, "  \"fn_records\": [\n");
+    ggml_fn_profiler_write_records_json(fp);
+    fprintf(fp, "  ],\n");
+    fprintf(fp, "  \"fn_threads\": [\n");
+    ggml_fn_profiler_write_threads_json(fp);
     fprintf(fp, "  ]\n");
     fprintf(fp, "}\n");
 
@@ -3126,6 +3158,9 @@ int ggml_backend_sched_write_profiling_text(ggml_backend_sched_t sched, FILE * f
 
     fprintf(fp, "\nTotal: %.2f ms  (%d records, %d unique ops)\n", (double) grand_total / 1e6,
             (int) sched->profiling_records.size(), (int) stats.size());
+
+    // Function-level (call-stack) summary, same file as the op-level data
+    ggml_fn_profiler_write_summary(fp);
 
     return 0;
 }

@@ -784,6 +784,10 @@ llama_memory_t llama_context::get_memory() const {
 }
 
 bool llama_context::memory_update(bool optimize) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_context::memory_update");
+#endif
+
     if (!memory) {
         return false;
     }
@@ -1272,6 +1276,10 @@ bool llama_context::set_adapter_cvec(
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_context::process_ubatch");
+#endif
+
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
@@ -1343,6 +1351,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 }
 
 int llama_context::encode(const llama_batch & batch_inp) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_context::encode");
+#endif
+
     GGML_ASSERT((!batch_inp.token && batch_inp.embd) || (batch_inp.token && !batch_inp.embd)); // NOLINT
 
     if (batch_inp.n_tokens == 0) {
@@ -1868,6 +1880,10 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
 
 
 int llama_context::decode(const llama_batch & batch_inp) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_context::decode");
+#endif
+
     GGML_ASSERT((!batch_inp.token && batch_inp.embd) || (batch_inp.token && !batch_inp.embd)); // NOLINT
 
     if (!memory && !model.hparams.is_hmm) {
@@ -2517,6 +2533,10 @@ llm_graph_params llama_context::graph_params(
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
                    bool   batched) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_context::graph_compute");
+#endif
+
     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
 
@@ -3831,6 +3851,10 @@ size_t llama_state_seq_load_file(llama_context * ctx, const char * filepath, lla
 int32_t llama_encode(
         llama_context * ctx,
           llama_batch   batch) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_encode");
+#endif
+
     const int ret = ctx->encode(batch);
     if (ret != 0) {
         LLAMA_LOG_ERROR("%s: failed to encode, ret = %d\n", __func__, ret);
@@ -3842,6 +3866,10 @@ int32_t llama_encode(
 int32_t llama_decode(
         llama_context * ctx,
           llama_batch   batch) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_decode");
+#endif
+
     const int ret = ctx->decode(batch);
     if (ret != 0 && ret != 1) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);

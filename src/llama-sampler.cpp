@@ -5,6 +5,9 @@
 #include "llama-grammar.h"
 
 #include "ggml-cpp.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 
 #include <array>
 #include <algorithm>
@@ -640,6 +643,10 @@ static void llama_sampler_chain_accept(struct llama_sampler * smpl, llama_token 
 }
 
 static void llama_sampler_chain_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::chain");
+#endif
+
     auto * chain = (llama_sampler_chain *) smpl->ctx;
 
     time_meas tm(chain->t_sample_us, chain->params.no_perf);
@@ -747,6 +754,10 @@ static void llama_sampler_chain_backend_apply(
           struct ggml_context       * ctx,
           struct ggml_cgraph        * gf,
           struct llama_sampler_data * data) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::chain_backend");
+#endif
+
     auto * chain = (llama_sampler_chain *) smpl->ctx;
 
     GGML_ASSERT(chain->is_init && "llama_sampler_chain_backend_init() not called");
@@ -804,6 +815,10 @@ struct llama_sampler * llama_sampler_chain_init(struct llama_sampler_chain_param
 }
 
 llama_token llama_sampler_sample(struct llama_sampler * smpl, struct llama_context * ctx, int32_t idx) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler_sample");
+#endif
+
     const llama_token   sampled_token  = llama_get_sampled_token_ith     (ctx, idx);
     const float *       sampled_probs  = llama_get_sampled_probs_ith     (ctx, idx);
     const float *       sampled_logits = llama_get_sampled_logits_ith    (ctx, idx);
@@ -961,6 +976,9 @@ static void llama_sampler_greedy_free(struct llama_sampler * smpl) {
 }
 
 static void llama_sampler_greedy_apply(struct llama_sampler * /*smpl*/, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::greedy");
+#endif
     cur_p->selected = 0;
     for (size_t i = 1; i < cur_p->size; ++i) {
         if (cur_p->data[i].logit > cur_p->data[cur_p->selected].logit) {
@@ -1034,6 +1052,9 @@ static const char * llama_sampler_dist_name(const struct llama_sampler * smpl) {
 }
 
 static void llama_sampler_dist_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::dist");
+#endif
     auto * ctx = (llama_sampler_dist *) smpl->ctx;
 
     // edge cases
@@ -1253,6 +1274,9 @@ static const char * llama_sampler_top_k_name(const struct llama_sampler * smpl) 
 }
 
 static void llama_sampler_top_k_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::top_k");
+#endif
     auto * ctx = (llama_sampler_top_k *) smpl->ctx;
     llama_sampler_top_k_impl(cur_p, ctx->k);
 }
@@ -1349,6 +1373,9 @@ static const char * llama_sampler_top_p_name(const struct llama_sampler * smpl) 
 }
 
 static void llama_sampler_top_p_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::top_p");
+#endif
     auto * ctx = (llama_sampler_top_p *) smpl->ctx;
 
     if (ctx->p >= 1.0f) {
@@ -1541,6 +1568,9 @@ static const char * llama_sampler_min_p_name(const struct llama_sampler * smpl) 
 }
 
 static void llama_sampler_min_p_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::min_p");
+#endif
     auto * ctx = (llama_sampler_min_p *) smpl->ctx;
 
     if (ctx->p <= 0.0f || !cur_p->size) {
@@ -1696,6 +1726,9 @@ static const char * llama_sampler_typical_name(const struct llama_sampler * /*sm
 }
 
 static void llama_sampler_typical_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::typical");
+#endif
     auto * ctx = (llama_sampler_typical *) smpl->ctx;
 
     // Reference implementation:
@@ -1805,6 +1838,9 @@ static const char * llama_sampler_temp_name(const struct llama_sampler * smpl) {
 }
 
 static void llama_sampler_temp_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::temp");
+#endif
     const auto * ctx = (llama_sampler_temp *) smpl->ctx;
 
     llama_sampler_temp_impl(cur_p, ctx->temp);
@@ -1911,6 +1947,9 @@ static const char * llama_sampler_temp_ext_name(const struct llama_sampler * smp
 }
 
 static void llama_sampler_temp_ext_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::temp_ext");
+#endif
     auto * ctx = (llama_sampler_temp_ext *) smpl->ctx;
     if (ctx->delta > 0) {
         const float min_temp = std::max(0.0f, ctx->temp - ctx->delta);
@@ -2230,6 +2269,9 @@ static const char * llama_sampler_mirostat_name(const struct llama_sampler * /*s
 }
 
 static void llama_sampler_mirostat_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::mirostat");
+#endif
     auto * ctx = (llama_sampler_mirostat *) smpl->ctx;
 
     llama_sampler_softmax_impl(cur_p, true);
@@ -2341,6 +2383,9 @@ static const char * llama_sampler_mirostat_v2_name(const struct llama_sampler * 
 }
 
 static void llama_sampler_mirostat_v2_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::mirostat_v2");
+#endif
     auto * ctx = (llama_sampler_mirostat_v2 *) smpl->ctx;
 
     llama_sampler_softmax_impl(cur_p, true);
@@ -2446,6 +2491,9 @@ static void llama_sampler_grammar_accept_impl(struct llama_sampler * smpl, llama
 }
 
 static void llama_sampler_grammar_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::grammar");
+#endif
     auto * ctx = (llama_sampler_grammar *) smpl->ctx;
     if (ctx->grammar) {
         llama_grammar_apply_impl(*ctx->grammar, cur_p);
@@ -2667,6 +2715,9 @@ static void llama_sampler_penalties_accept(struct llama_sampler * smpl, llama_to
 }
 
 static void llama_sampler_penalties_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::penalties");
+#endif
     auto * ctx = (llama_sampler_penalties *) smpl->ctx;
 
     if ((ctx->penalty_last_n == 0) ||
@@ -2777,6 +2828,9 @@ static const char * llama_sampler_top_n_sigma_name(const struct llama_sampler * 
 }
 
 static void llama_sampler_top_n_sigma_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::top_n_sigma");
+#endif
     auto * ctx = (llama_sampler_top_n_sigma *) smpl->ctx;
 
     if (ctx->n <= 0.0f || cur_p->size <= 1) {
@@ -2928,6 +2982,9 @@ static void llama_sampler_dry_accept(struct llama_sampler * smpl, llama_token to
 
 // Ported from Koboldcpp, original PR: https://github.com/LostRuins/koboldcpp/pull/982 (Original author: pi6am)
 static void llama_sampler_dry_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::dry");
+#endif
     auto * ctx = (llama_sampler_dry *) smpl->ctx;
 
     if (ctx->dry_multiplier == 0.0f || ctx->dry_base < 1.0f || ctx->dry_penalty_last_n == 0) {
@@ -3292,6 +3349,9 @@ static const char * llama_sampler_adaptive_p_name(const struct llama_sampler * /
 }
 
 static void llama_sampler_adaptive_p_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::adaptive_p");
+#endif
     auto * ctx = (llama_sampler_adaptive_p *) smpl->ctx;
 
     llama_sampler_softmax_impl(cur_p, false);
@@ -3442,6 +3502,9 @@ static const char * llama_sampler_logit_bias_name(const struct llama_sampler * s
 }
 
 static void llama_sampler_logit_bias_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::logit_bias");
+#endif
     auto * ctx = (llama_sampler_logit_bias *) smpl->ctx;
 
     if (ctx->logit_bias.empty()) {
@@ -3607,6 +3670,9 @@ static const char * llama_sampler_infill_name(const struct llama_sampler * /*smp
 }
 
 static void llama_sampler_infill_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_sampler::infill");
+#endif
     auto * ctx = (llama_sampler_infill *) smpl->ctx;
 
     llama_sampler_softmax_impl(cur_p, true);

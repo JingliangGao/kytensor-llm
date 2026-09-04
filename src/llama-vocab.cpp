@@ -1,6 +1,9 @@
 #include "llama-vocab.h"
 
 #include "ggml.h"
+#ifdef LLAMA_USE_PROFILER
+#include "ggml-profiler.h"
+#endif
 #include "gguf.h"
 #include "llama-impl.h"
 #include "llama-model-loader.h"
@@ -4077,6 +4080,10 @@ int32_t llama_tokenize(
                      int32_t   n_tokens_max,
                         bool   add_special,
                         bool   parse_special) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_tokenize");
+#endif
+
     return vocab->tokenize(text, text_len, tokens, n_tokens_max, add_special, parse_special);
 }
 
@@ -4098,5 +4105,9 @@ int32_t llama_detokenize(
                      int32_t   text_len_max,
                         bool   remove_special,
                         bool   unparse_special) {
+#ifdef LLAMA_USE_PROFILER
+    GGML_PROFILE_FUNC("llama_detokenize");
+#endif
+
     return vocab->detokenize(tokens, n_tokens, text, text_len_max, remove_special, unparse_special);
 }

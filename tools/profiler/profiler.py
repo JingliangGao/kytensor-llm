@@ -329,10 +329,66 @@ class OpStats:
         return TYPE_NAMES.get(self.event_type, f"UNKNOWN({self.event_type})")
 
 
+@dataclass
+class FnRecord:
+    """Function-level span (v4+ "fn_records"): one timed scope of a C/C++ function."""
+    name: str
+    start_ns: int
+    end_ns: int
+    pid: int
+    tid: int
+
+    @property
+    def duration_ns(self) -> int:
+        return max(0, self.end_ns - self.start_ns)
+
+    @property
+    def duration_us(self) -> float:
+        return self.duration_ns / 1000.0
+
+    @property
+    def duration_ms(self) -> float:
+        return self.duration_ns / 1_000_000.0
+
+
+@dataclass
+class FnStats:
+    """Aggregated function-level statistics (nested totals include children)."""
+    name: str
+    count: int = 0
+    total_ns: int = 0
+    min_ns: int = 0
+    max_ns: int = 0
+
+    @property
+    def avg_ns(self) -> float:
+        return self.total_ns / self.count if self.count > 0 else 0
+
+    @property
+    def avg_us(self) -> float:
+        return self.avg_ns / 1000.0
+
+    @property
+    def total_ms(self) -> float:
+        return self.total_ns / 1_000_000.0
+
+    @property
+    def min_us(self) -> float:
+        return self.min_ns / 1000.0
+
+    @property
+    def max_us(self) -> float:
+        return self.max_ns / 1000.0
+
+
 class ProfileData:
-    def __init__(self, records: list[ProfileRecord], metadata: dict):
+    def __init__(self, records: list[ProfileRecord], metadata: dict,
+                 fn_records: list[FnRecord] | None = None,
+                 fn_threads: dict[int, str] | None = None):
         self.records = records
         self.metadata = metadata
+        self.fn_records = fn_records if fn_records is not None else []
+        self.fn_threads = fn_threads if fn_threads is not None else {}
 
     @classmethod
     def load(cls, filepath: str | Path) -> ProfileData:
@@ -445,7 +501,22 @@ class ProfileData:
             "backends": backends,
         }
 
-        return cls(records, metadata)
+        # Function-level (call-stack) spans, embedded since v4
+        fn_records = []
+        for r in data.get("fn_records", []):
+            fn_records.append(FnRecord(
+                name=r.get("name", "unknown"),
+                start_ns=int(r.get("start_ns", 0)),
+                end_ns=int(r.get("end_ns", 0)),
+                pid=int(r.get("pid", 0)),
+                tid=int(r.get("tid", 0)),
+            ))
+
+        fn_threads: dict[int, str] = {}
+        for t in data.get("fn_threads", []):
+            fn_threads[int(t.get("tid", 0))] = t.get("name", "")
+
+        return cls(records, metadata, fn_records, fn_threads)
 
     @property
     def total_ns(self) -> int:
@@ -505,6 +576,86 @@ class ProfileData:
         """Rank operations by time per byte (inefficiency). Lower is better."""
         all_stats = [s for s in self.stats() if s.total_bytes > 0 and s.event_type == OP_EVENT]
         return sorted(all_stats, key=lambda s: s.time_per_byte_ns, reverse=True)[:n]
+
+    #
+    # Function-level (call-stack) analysis
+    #
+
+    def fn_stats(self) -> list[FnStats]:
+        """Aggregate function-level spans by name, sorted by total time.
+
+        Note: totals of nested scopes include their children (a llama_decode
+        span covers the whole call tree underneath it).
+        """
+        groups: dict[str, FnStats] = {}
+        for rec in self.fn_records:
+            s = groups.get(rec.name)
+            if s is None:
+                groups[rec.name] = FnStats(
+                    name=rec.name,
+                    count=1,
+                    total_ns=rec.duration_ns,
+                    min_ns=rec.duration_ns,
+                    max_ns=rec.duration_ns,
+                )
+                continue
+            s.count += 1
+            s.total_ns += rec.duration_ns
+            s.min_ns = min(s.min_ns, rec.duration_ns)
+            s.max_ns = max(s.max_ns, rec.duration_ns)
+
+        return sorted(groups.values(), key=lambda s: s.total_ns, reverse=True)
+
+    def top_fns(self, n: int = 10) -> list[FnStats]:
+        """Return the N most time-consuming functions (aggregated)."""
+        return self.fn_stats()[:n]
+
+    def fn_total_ns(self) -> int:
+        """Grand total of the top-level (non-nested) spans.
+
+        Computed with a per-thread sweep-line over the real spans, so nested
+        scopes are not double counted. Usable as a reference for percentages.
+        """
+        from collections import defaultdict
+
+        spans: dict[int, list[tuple[int, int]]] = defaultdict(list)
+        for rec in self.fn_records:
+            spans[rec.tid].append((rec.start_ns, rec.end_ns))
+
+        total = 0
+        for _, iv in spans.items():
+            iv.sort()
+            cur_s, cur_e = iv[0]
+            for s, e in iv[1:]:
+                if s > cur_e:
+                    total += cur_e - cur_s
+                    cur_s, cur_e = s, e
+                else:
+                    cur_e = max(cur_e, e)
+            total += cur_e - cur_s
+        return total
+
+    def fn_summary(self) -> None:
+        """Print the function-level summary table to stdout."""
+        if not self.fn_records:
+            return
+
+        print(f"  {'='*76}")
+        print(f"  Function-level Profiling Summary ({len(self.fn_records)} spans)")
+        print(f"  note: totals of nested scopes include their children")
+        print(f"  {'='*76}\n")
+
+        total_ns = self.fn_total_ns()
+        print(f"  {'Function':<44} {'%Time':>7}  {'Count':>7}  {'Total':>10}  "
+              f"{'Avg':>10}  {'Min':>10}  {'Max':>10}")
+        print(f"  {'':->44} {'':->7}  {'':->7}  {'(ms)':>10}  "
+              f"{'(us)':>10}  {'(us)':>10}  {'(us)':>10}")
+
+        for s in self.fn_stats():
+            pct = 100.0 * s.total_ns / total_ns if total_ns > 0 else 0.0
+            print(f"  {s.name:<44} {pct:>6.1f}%  {s.count:>7}  {s.total_ms:>10.2f}  "
+                  f"{s.avg_us:>10.2f}  {s.min_us:>10.2f}  {s.max_us:>10.2f}")
+        print()
 
     def summary(self) -> None:
         """Print a formatted summary table to stdout."""
@@ -574,6 +725,8 @@ class ProfileData:
 
         print()
 
+        self.fn_summary()
+
     def export_chrome_trace(self, filepath: str | Path) -> None:
         """Export as Chrome Trace Event format for chrome://tracing."""
         events = []
@@ -589,8 +742,12 @@ class ProfileData:
         backend_by_id: dict[int, dict] = {b["id"]: b for b in metadata_backends}
 
         device_type_names = {0: "CPU", 1: "GPU", 2: "ACCEL"}
+        # When function-level spans are present, reserve pid 0 for them so that
+        # viewers which order processes by pid (ignoring sort_index) also show
+        # the function-level lanes at the very top.
+        pid_base = 1 if self.fn_records else 0
         for idx, bid in enumerate(backend_ids):
-            pid_map[bid] = idx
+            pid_map[bid] = idx + pid_base
             if bid in backend_by_id:
                 binfo = backend_by_id[bid]
                 dev_type = binfo.get("device_type", 0)
@@ -604,13 +761,20 @@ class ProfileData:
                 backend_names[bid] = f"Backend {bid}"
 
         # Process metadata events
-        for bid in backend_ids:
+        for i, bid in enumerate(backend_ids):
             pid = pid_map[bid]
             events.append({
                 "ph": "M",  # metadata
                 "pid": pid,
                 "name": "process_name",
                 "args": {"name": backend_names[bid]},
+            })
+            # Viewers order processes by sort_index ascending (smallest on top).
+            events.append({
+                "ph": "M",
+                "pid": pid,
+                "name": "process_sort_index",
+                "args": {"sortIndex": i},
             })
 
         # Use real timestamps, but prevent overlaps within each track.
@@ -648,6 +812,51 @@ class ProfileData:
                     },
                 })
                 cursor = ts + dur
+
+        # Function-level spans (v4+): rendered as a separate process on the
+        # same time axis (timestamps share the ggml_profiler_time_ns epoch).
+        # Nested scopes on the same thread render as a call-stack flame view.
+        # sort_index keeps this lane pinned ABOVE all op-level backends in
+        # viewers that honor it; pid 0 covers viewers that sort by pid.
+        if self.fn_records:
+            fn_pid = 0
+            events.append({
+                "ph": "M",
+                "pid": fn_pid,
+                "name": "process_name",
+                "args": {"name": "llama.cpp (function-level)"},
+            })
+            events.append({
+                "ph": "M",
+                "pid": fn_pid,
+                "name": "process_sort_index",
+                "args": {"sortIndex": -1000},
+            })
+            for i, (tid, tname) in enumerate(sorted(self.fn_threads.items())):
+                events.append({
+                    "ph": "M",
+                    "pid": fn_pid,
+                    "tid": tid,
+                    "name": "thread_name",
+                    "args": {"name": tname if tname else f"tid-{tid}"},
+                })
+                events.append({
+                    "ph": "M",
+                    "pid": fn_pid,
+                    "tid": tid,
+                    "name": "thread_sort_index",
+                    "args": {"sortIndex": i},
+                })
+            for rec in self.fn_records:
+                events.append({
+                    "ph": "X",
+                    "pid": fn_pid,
+                    "tid": rec.tid,
+                    "name": rec.name,
+                    "ts": rec.start_ns / 1000.0,
+                    "dur": rec.duration_ns / 1000.0,
+                    "cat": "function",
+                })
 
         trace = {"traceEvents": events}
         with open(filepath, "w") as f:
@@ -795,7 +1004,75 @@ class ProfileData:
             print("No profiling data to export.")
             return
 
-        header_stats = str(len(events)) + ' events | ' + f'{total_us/1000:.1f}' + ' ms'
+        # Op lanes use a packed cumulative axis (sum of durations).  Stats
+        # percentages must keep that denominator even when function-level
+        # spans extend the visible time range.
+        stats_total_us = total_us
+
+        # Function-level spans (v4+): separate top lanes on a wall-clock axis
+        # (rebased so the first span starts at 0), plus their own stats tab.
+        fn_events_js: list[dict] = []
+        fn_threads_js: dict[str, str] = {}
+        fn_stats_js: list[dict] = []
+        fn_span_us = 0.0
+        if self.fn_records:
+            for tid, tname in sorted(self.fn_threads.items()):
+                fn_threads_js[str(tid)] = tname if tname else f"tid-{tid}"
+
+            # Merge coverage intervals across threads, then compress idle gaps
+            # (e.g. interactive waits) so they do not squeeze the op lanes into
+            # a sliver.  Time inside coverage keeps a 1:1 scale.
+            iv: list[list[int]] = []
+            for s, e in sorted((r.start_ns, r.end_ns) for r in self.fn_records):
+                if iv and s <= iv[-1][1]:
+                    iv[-1][1] = max(iv[-1][1], e)
+                else:
+                    iv.append([s, e])
+            coverage_ns = sum(e - s for s, e in iv)
+            GAP_SQUEEZE_NS = 1_000_000  # gaps > 1 ms are shrunk to 1 ms
+            offsets: list[int] = []
+            acc = 0
+            for i, (s, e) in enumerate(iv):
+                offsets.append(acc - s)  # compress(t) = t + offset of its interval
+                acc += e - s
+                if i + 1 < len(iv):
+                    acc += min(iv[i + 1][0] - e, GAP_SQUEEZE_NS)
+
+            def compress(t_ns: int) -> int:
+                lo, hi = 0, len(iv) - 1
+                while lo < hi:
+                    m = (lo + hi + 1) // 2
+                    if iv[m][0] <= t_ns:
+                        lo = m
+                    else:
+                        hi = m - 1
+                return t_ns + offsets[lo]
+
+            t0 = compress(min(r.start_ns for r in self.fn_records))
+            for rec in self.fn_records:
+                fn_events_js.append({
+                    "n": rec.name,
+                    "start": (compress(rec.start_ns) - t0) / 1000.0,
+                    "d": rec.duration_ns / 1000.0,
+                    "tid": rec.tid,
+                })
+            fn_span_us = coverage_ns / 1000.0
+            total_us = max(total_us, (compress(max(r.end_ns for r in self.fn_records)) - t0) / 1000.0)
+
+            fn_total_ns = self.fn_total_ns()
+            for st in self.fn_stats():  # already sorted by total desc
+                fn_stats_js.append({
+                    "n": st.name,
+                    "d": st.total_ns / 1000.0,
+                    "c": st.count,
+                    "pct": (st.total_ns / fn_total_ns * 100.0) if fn_total_ns > 0 else 0.0,
+                    "min": st.min_us,
+                    "max": st.max_us,
+                })
+
+        header_stats = str(len(events)) + ' events | ' + f'{stats_total_us/1000:.1f}' + ' ms'
+        if fn_events_js:
+            header_stats += f' | functions: {len(fn_events_js)} spans, {fn_span_us/1000:.1f} ms covered'
 
         # Build backend name map with string keys for JSON
         bn_str = {str(k): v for k, v in backend_names.items()}
@@ -820,7 +1097,14 @@ class ProfileData:
             '#main{flex:1;display:flex;flex-direction:column;overflow:hidden}\n'
             '#cw{flex-shrink:0;overflow:hidden;position:relative}\n'
             '#c{display:block}\n'
-            '#stats{flex:1;overflow-y:auto;background:#ffffff;border-top:1px solid #d8dee9}\n'
+            '#stats{flex:1;display:flex;flex-direction:column;background:#ffffff;'
+            'border-top:1px solid #d8dee9;min-height:0}\n'
+            '#sttabs{padding:4px 8px;background:#f0f2f6;border-bottom:1px solid #d8dee9;'
+            'flex-shrink:0}\n'
+            '.stab{border:1px solid #d0d6e0;background:#fff;color:#555;font-size:11px;'
+            'padding:2px 10px;margin-right:4px;cursor:pointer;border-radius:3px}\n'
+            '.stab.act{background:#e94560;color:#fff;border-color:#e94560}\n'
+            '#stbody{flex:1;overflow-y:auto}\n'
             '#stats table{width:100%;border-collapse:collapse;font-size:11px}\n'
             '#stats thead{position:sticky;top:0;z-index:1}\n'
             '#stats th{text-align:left;padding:6px 10px;color:#888;background:#f0f2f6;'
@@ -857,7 +1141,11 @@ class ProfileData:
             '<span id="vi"></span></div>\n'
             '<div id="main">\n'
             '<div id="cw"><canvas id="c"></canvas></div>\n'
-            '<div id="stats"></div>\n'
+            '<div id="stats"><div id="sttabs">'
+            '<button class="stab act" onclick="setStTab(\'ops\',this)">OP-level</button>'
+            + ('<button class="stab" onclick="setStTab(\'fn\',this)">Function-level</button>'
+               if fn_events_js else '')
+            + '</div><div id="stbody"></div></div>\n'
             '</div>\n'
             '<div id="tt"></div>\n'
             '<div id="lg"></div>\n'
@@ -868,6 +1156,11 @@ class ProfileData:
         html += 'var EVENTS=' + json_mod.dumps(events, separators=(',', ':')) + ';\n'
         html += 'var BACKENDS=' + json_mod.dumps(bn_str, separators=(',', ':')) + ';\n'
         html += 'var TOTAL_US=' + repr(total_us) + ';\n'
+        html += 'var STAT_TOTAL_US=' + repr(stats_total_us) + ';\n'
+        html += 'var FN_EVENTS=' + json_mod.dumps(fn_events_js, separators=(',', ':')) + ';\n'
+        html += 'var FN_THREADS=' + json_mod.dumps(fn_threads_js, separators=(',', ':')) + ';\n'
+        html += 'var FN_STATS=' + json_mod.dumps(fn_stats_js, separators=(',', ':')) + ';\n'
+        html += 'var FN_SPAN_US=' + repr(fn_span_us) + ';\n'
 
         # --- JavaScript (plain string, no f-strings) ---
         js = r"""
@@ -878,6 +1171,38 @@ LANE_IDS.sort(function(a,b){return a-b;});
 var LANE_EVENTS={};
 for(var i=0;i<LANE_IDS.length;i++)LANE_EVENTS[LANE_IDS[i]]=[];
 for(var i=0;i<EVENTS.length;i++)LANE_EVENTS[EVENTS[i].bid].push(EVENTS[i]);
+
+// Function-level lanes: always pinned to the TOP, wall-clock axis (rebased
+// to 0 and idle-gap-compressed on the Python side).  One lane per thread,
+// kept separate from the op-level lanes.  Sorted by start asc / dur desc so
+// nested children paint over their parents (flame-like stacking).
+var FN_LANE_IDS=[];
+function isFnLane(id){return typeof id==='string'&&id.substring(0,3)==='fn_';}
+function laneLabel(id){
+  if(isFnLane(id)){
+    var t=id.substring(3);
+    return 'fn \u00b7 '+(FN_THREADS[t]||('tid-'+t));
+  }
+  return BACKENDS[id]||('B'+id);
+}
+if(FN_EVENTS.length>0){
+  var byTid={};
+  for(var i=0;i<FN_EVENTS.length;i++){var e=FN_EVENTS[i];if(!(e.tid in byTid))byTid[e.tid]=[];byTid[e.tid].push(e);}
+  var tids=[];for(var t in byTid)tids.push(t);
+  tids.sort(function(a,b){return a-b;});
+  for(var i=0;i<tids.length;i++){
+    var arr=byTid[tids[i]];
+    arr.sort(function(a,b){return (a.start-b.start)||(b.d-a.d);});
+    var id='fn_'+tids[i];
+    FN_LANE_IDS.push(id);
+    LANE_EVENTS[id]=arr;
+  }
+}
+LANE_IDS=FN_LANE_IDS.concat(LANE_IDS);
+for(var li=0;li<LANE_IDS.length;li++){
+  var _evts=LANE_EVENTS[LANE_IDS[li]];
+  for(var i=0;i<_evts.length;i++)_evts[i].lane=LANE_IDS[li];
+}
 
 // Constants
 var LANE_H=32,LABEL_W=150,MINIMAP_H=28,AXIS_H=18;
@@ -932,6 +1257,19 @@ function bsHit(evts,t){
     else return ev;
   }
   return null;
+}
+// Function-level lanes contain nested (overlapping) spans, so binary search
+// does not apply.  Linear scan for the innermost (shortest) containing span;
+// fn lanes are small, so this is cheap.
+function fnHit(evts,t){
+  var best=null;
+  for(var i=0;i<evts.length;i++){
+    var e=evts[i];
+    if(t>=e.start&&t<=e.start+e.d){
+      if(!best||e.d<best.d)best=e;
+    }
+  }
+  return best;
 }
 
 // Pre-render minimap to offscreen canvas
@@ -1002,9 +1340,15 @@ function render(){
   for(var li=0;li<LANE_IDS.length;li++){
     var bid=LANE_IDS[li];
     var y=TOP_PAD+li*LANE_H;
+    var fnLane=isFnLane(bid);
 
-    // Background
-    ctx.fillStyle=li%2===0?'#ffffff':'#f3f5f8';
+    // Background (function-level lanes get a distinct tint, kept separate
+    // from the op-level backend lanes)
+    if(fnLane){
+      ctx.fillStyle=li%2===0?'#fff7f9':'#fdeef2';
+    }else{
+      ctx.fillStyle=li%2===0?'#ffffff':'#f3f5f8';
+    }
     ctx.fillRect(LABEL_W,y,viewW,LANE_H);
 
     // Events (clipped to event area)
@@ -1035,7 +1379,7 @@ function render(){
     ctx.restore();
 
     // Hover highlight
-    if(hoveredEv&&hoveredEv.bid===bid){
+    if(hoveredEv&&hoveredEv.lane===bid){
       var hx=LABEL_W+(hoveredEv.start-offsetUs)*scale;
       var hw=hoveredEv.d*scale;
       ctx.save();
@@ -1045,14 +1389,17 @@ function render(){
       ctx.restore();
     }
 
-    // Lane separator
-    ctx.strokeStyle='#d8dee9';ctx.lineWidth=0.5;
+    // Lane separator (thicker accent line between the function-level group
+    // and the op-level backend group)
+    var groupEdge=fnLane&&li===FN_LANE_IDS.length-1;
+    ctx.strokeStyle=groupEdge?'#e94560':'#d8dee9';
+    ctx.lineWidth=groupEdge?1.5:0.5;
     ctx.beginPath();ctx.moveTo(0,y+LANE_H-0.5);ctx.lineTo(canvasW,y+LANE_H-0.5);ctx.stroke();
 
     // Label background + text
-    ctx.fillStyle='#f0f2f6';ctx.fillRect(0,y,LABEL_W,LANE_H);
-    ctx.fillStyle='#444';ctx.font='11px system-ui';
-    ctx.fillText(BACKENDS[bid]||('B'+bid),8,y+LANE_H/2+4);
+    ctx.fillStyle=fnLane?'#fbe4ea':'#f0f2f6';ctx.fillRect(0,y,LABEL_W,LANE_H);
+    ctx.fillStyle=fnLane?'#a3455e':'#444';ctx.font='11px system-ui';
+    ctx.fillText(laneLabel(bid),8,y+LANE_H/2+4);
   }
 
   // Axis label area background (covers labels column in axis row)
@@ -1113,10 +1460,10 @@ canvas.addEventListener('mousemove',function(e){
   }
   var bid=LANE_IDS[li];
   var mu=offsetUs+(mx-LABEL_W)/scale;
-  var ev=bsHit(LANE_EVENTS[bid],mu);
+  var ev=isFnLane(bid)?fnHit(LANE_EVENTS[bid],mu):bsHit(LANE_EVENTS[bid],mu);
   if(ev){
     if(hoveredEv!==ev){hoveredEv=ev;render();}
-    var h='<b style="color:#e94560">'+ev.n+'</b><br>'+fmtT(ev.d)+' | '+(BACKENDS[ev.bid]||'B'+ev.bid);
+    var h='<b style="color:#e94560">'+ev.n+'</b><br>'+fmtT(ev.d)+' | '+laneLabel(ev.lane);
     if(ev.s)h+='<br>Shape: '+fmtSh(ev.s);
     if(ev.b)h+='<br>Bytes: '+fmtB(ev.b);
     tip.innerHTML=h;tip.style.display='block';
@@ -1190,7 +1537,7 @@ function buildStats(){
     var bkeys=[];for(var bk in op.backends)bkeys.push(bk);
     bkeys.sort(function(a,b){return op.backends[b].d-op.backends[a].d;});
     rows.push({id:opId,p:-1,lv:0,name:op.name,d:op.d,count:op.count,bytes:op.bytes,
-      min:op.min,max:op.max,pct:op.d/TOTAL_US*100,ch:bkeys.length>0});
+      min:op.min,max:op.max,pct:op.d/STAT_TOTAL_US*100,ch:bkeys.length>0});
     for(var bi=0;bi<bkeys.length;bi++){
       var bdata=op.backends[bkeys[bi]];
       var bId=rid++;
@@ -1198,12 +1545,12 @@ function buildStats(){
       var skeys=[];for(var sk in bdata.shapes)skeys.push(sk);
       skeys.sort(function(a,b){return bdata.shapes[b].d-bdata.shapes[a].d;});
       rows.push({id:bId,p:opId,lv:1,name:bname,d:bdata.d,count:bdata.count,bytes:bdata.bytes,
-        min:bdata.min,max:bdata.max,pct:bdata.d/TOTAL_US*100,ch:skeys.length>0});
+        min:bdata.min,max:bdata.max,pct:bdata.d/STAT_TOTAL_US*100,ch:skeys.length>0});
       for(var si=0;si<skeys.length;si++){
         var sdata=bdata.shapes[skeys[si]];
         var sId=rid++;
         rows.push({id:sId,p:bId,lv:2,name:skeys[si],d:sdata.d,count:sdata.count,bytes:sdata.bytes,
-          min:sdata.min,max:sdata.max,pct:sdata.d/TOTAL_US*100,ch:false});
+          min:sdata.min,max:sdata.max,pct:sdata.d/STAT_TOTAL_US*100,ch:false});
       }
     }
   }
@@ -1252,7 +1599,44 @@ function buildStats(){
     h+='</tr>';
   }
   h+='</tbody></table>';
-  document.getElementById('stats').innerHTML=h;
+  document.getElementById('stbody').innerHTML=h;
+}
+
+// --- Stats tab switching (op-level vs function-level, kept separate) ---
+function setStTab(tab,el){
+  var bs=document.querySelectorAll('.stab');
+  for(var i=0;i<bs.length;i++)bs[i].classList.remove('act');
+  if(el)el.classList.add('act');
+  if(tab==='fn')buildFnStats();else buildStats();
+}
+
+// --- Function-level stats table ---
+function buildFnStats(){
+  var h='<div style="padding:6px 10px;font-size:10px;color:#888">'
+    +'Function-level spans (covered wall time: '+fmtT(FN_SPAN_US)+'). '
+    +'Nested scopes include their children, so totals can exceed 100%.</div>';
+  h+='<table><thead><tr><th style="width:30%">Function</th>'
+    +'<th class="r" style="width:12%">% Time</th>'
+    +'<th class="r" style="width:14%">Total</th>'
+    +'<th class="r" style="width:10%">Count</th>'
+    +'<th class="r" style="width:12%">Avg</th>'
+    +'<th class="r" style="width:11%">Min</th>'
+    +'<th class="r" style="width:11%">Max</th>'
+    +'</tr></thead><tbody>';
+  for(var i=0;i<FN_STATS.length;i++){
+    var r=FN_STATS[i];
+    h+='<tr class="l0">'
+      +'<td style="padding-left:8px"><span style="color:#a3455e;font-weight:bold">'+r.n+'</span></td>'
+      +'<td class="r pct-cell"><div class="pct-bg" style="width:'+Math.min(100,Math.max(0.5,r.pct))+'%;background:#e8879c;opacity:0.3"></div><span class="pct-tx">'+r.pct.toFixed(1)+'%</span></td>'
+      +'<td class="r">'+fmtT(r.d)+'</td>'
+      +'<td class="r">'+r.c.toLocaleString()+'</td>'
+      +'<td class="r">'+fmtT(r.d/r.c)+'</td>'
+      +'<td class="r">'+fmtT(r.min)+'</td>'
+      +'<td class="r">'+fmtT(r.max)+'</td>'
+      +'</tr>';
+  }
+  h+='</tbody></table>';
+  document.getElementById('stbody').innerHTML=h;
 }
 
 function togRow(pid,el){
@@ -1315,6 +1699,8 @@ Examples:
                         help="Max records in HTML viewer (0=unlimited, set to downsample for huge traces)")
     parser.add_argument("--top-ops", type=int, default=0,
                         help="Show top N operations (0 = show summary)")
+    parser.add_argument("--top-fns", type=int, default=0,
+                        help="Show top N functions (function-level spans, v4+ files)")
     parser.add_argument("--top-kernels", type=int, default=0,
                         help="Show top N longest kernels")
     parser.add_argument("--inefficiency", action="store_true",
@@ -1341,6 +1727,19 @@ Examples:
                   f"{s.count:>6}x  {s.total_ms:>10.2f} ms  avg={s.avg_us:.2f} us")
         print()
 
+    if args.top_fns > 0:
+        if not data.fn_records:
+            print("\nNo function-level data in this file (v4+ profiler output required).\n")
+        else:
+            total_ns = data.fn_total_ns()
+            print(f"\nTop {args.top_fns} functions by total time "
+                  f"(nested totals include children):\n")
+            for s in data.top_fns(args.top_fns):
+                pct = 100.0 * s.total_ns / total_ns if total_ns > 0 else 0
+                print(f"  {s.name:<44} {pct:>6.1f}%  {s.count:>7}x  "
+                      f"{s.total_ms:>10.2f} ms  avg={s.avg_us:.2f} us")
+            print()
+
     if args.top_kernels > 0:
         print(f"\nTop {args.top_kernels} longest kernels:\n")
         for rec in data.top_kernels(args.top_kernels):
@@ -1355,7 +1754,7 @@ Examples:
                   f"{s.count:>6} calls  {s.total_bytes / 1e6:.1f} MB")
         print()
 
-    if args.top_ops == 0 and args.top_kernels == 0 and not args.inefficiency and not args.chrome_trace and not args.html_viewer and not args.export_ops:
+    if args.top_ops == 0 and args.top_kernels == 0 and args.top_fns == 0 and not args.inefficiency and not args.chrome_trace and not args.html_viewer and not args.export_ops:
         data.summary()
 
 
