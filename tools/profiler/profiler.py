@@ -18,6 +18,24 @@ from typing import Optional
 OP_EVENT = 0
 COPY_EVENT = 1
 
+# Process name for the function-level lanes in Chrome/Perfetto traces.
+# Empirically probed against ui.perfetto.dev:
+#   - the Perfetto UI orders process lanes ALPHABETICALLY by process name
+#     (pid and process_sort_index are ignored there);
+#   - pid 0 is treated specially (kernel/swapper) and sinks to the bottom,
+#     so the function-level process must NOT use pid 0.
+# Backend process names always start with a letter from {ACCEL, Backend, CPU,
+# Device, GPU}; an "AA" prefix sorts before all of them whether the
+# comparison is case sensitive or not.  chrome://tracing additionally honors
+# the process_sort_index metadata emitted by export_chrome_trace().
+FN_TRACE_PROCESS_NAME = "AA llama.cpp (function-level)"
+
+# PIDs used in exported Chrome traces.  pid 0 is avoided for the
+# function-level process because the Perfetto UI treats it specially and
+# shows it last.
+FN_TRACE_PID = 1
+TRACE_BACKEND_PID_BASE = 2
+
 TYPE_NAMES = {0: "OP", 1: "COPY"}
 
 GGML_TYPE_NAMES = {
@@ -731,6 +749,31 @@ class ProfileData:
         """Export as Chrome Trace Event format for chrome://tracing."""
         events = []
 
+        # NOTE on viewer ordering: the Perfetto UI (ui.perfetto.dev) orders
+        # process lanes alphabetically by process NAME, ignores
+        # process_sort_index, and treats pid 0 specially (shown last).  To
+        # keep the function-level lanes permanently at the top we combine
+        # every known ordering rule:
+        #   - alphabetical: fn process name starts with "AA" which sorts
+        #     before any backend name (CPU/GPU/ACCEL/Backend/Device)
+        #   - not pid 0: fn uses FN_TRACE_PID (1), backends start at
+        #     TRACE_BACKEND_PID_BASE (2)
+        #   - appearance order: fn metadata is emitted first in this array
+        #   - sortIndex ascending: fn uses -1000 (chrome://tracing honors this)
+        if self.fn_records:
+            events.append({
+                "ph": "M",  # metadata
+                "pid": FN_TRACE_PID,
+                "name": "process_name",
+                "args": {"name": FN_TRACE_PROCESS_NAME},
+            })
+            events.append({
+                "ph": "M",
+                "pid": FN_TRACE_PID,
+                "name": "process_sort_index",
+                "args": {"sortIndex": -1000},
+            })
+
         # Build backend name mapping and remap to non-negative PIDs
         # (Chrome cannot handle negative PIDs)
         backend_ids = sorted(set(rec.backend_id for rec in self.records))
@@ -742,10 +785,11 @@ class ProfileData:
         backend_by_id: dict[int, dict] = {b["id"]: b for b in metadata_backends}
 
         device_type_names = {0: "CPU", 1: "GPU", 2: "ACCEL"}
-        # When function-level spans are present, reserve pid 0 for them so that
-        # viewers which order processes by pid (ignoring sort_index) also show
-        # the function-level lanes at the very top.
-        pid_base = 1 if self.fn_records else 0
+        # When function-level spans are present, reserve small pids: fn gets
+        # FN_TRACE_PID (1) and backends start at TRACE_BACKEND_PID_BASE (2).
+        # pid 0 must not be used for the fn lanes: the Perfetto UI treats it
+        # specially and shows it last.
+        pid_base = TRACE_BACKEND_PID_BASE if self.fn_records else 0
         for idx, bid in enumerate(backend_ids):
             pid_map[bid] = idx + pid_base
             if bid in backend_by_id:
@@ -816,22 +860,10 @@ class ProfileData:
         # Function-level spans (v4+): rendered as a separate process on the
         # same time axis (timestamps share the ggml_profiler_time_ns epoch).
         # Nested scopes on the same thread render as a call-stack flame view.
-        # sort_index keeps this lane pinned ABOVE all op-level backends in
-        # viewers that honor it; pid 0 covers viewers that sort by pid.
+        # Process metadata for FN_TRACE_PID was already emitted at the very
+        # top of this event array (see the top of export_chrome_trace).
         if self.fn_records:
-            fn_pid = 0
-            events.append({
-                "ph": "M",
-                "pid": fn_pid,
-                "name": "process_name",
-                "args": {"name": "llama.cpp (function-level)"},
-            })
-            events.append({
-                "ph": "M",
-                "pid": fn_pid,
-                "name": "process_sort_index",
-                "args": {"sortIndex": -1000},
-            })
+            fn_pid = FN_TRACE_PID
             for i, (tid, tname) in enumerate(sorted(self.fn_threads.items())):
                 events.append({
                     "ph": "M",

@@ -4170,17 +4170,28 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     float ms = 0.0f;
                     CUDA_CHECK(cudaEventElapsedTime(&ms, cuda_ctx->profiling_start_event, cuda_ctx->profiling_end_event));
 
+                    // CUDA events only yield a relative duration (cudaEventElapsedTime);
+                    // there is no absolute GPU timestamp exposed by the runtime API.
+                    // To get start/end timestamps on the same epoch as the rest of the
+                    // profiler (ggml_profiler_time_ns, CLOCK_MONOTONIC_RAW), we read
+                    // the CPU clock immediately after cudaEventSynchronize returns --
+                    // at that point the GPU has finished, so the CPU clock is a good
+                    // approximation of the kernel's end time. We then back the start
+                    // timestamp out by subtracting the measured GPU duration. Without
+                    // this, start_ns would be 0 (which the trace exporter rejects).
+                    const uint64_t duration_ns = (uint64_t) (ms * 1000000.0f);
+                    const uint64_t end_ns      = ggml_profiler_time_ns();
+                    const uint64_t start_ns    = (end_ns > duration_ns) ? (end_ns - duration_ns) : end_ns;
+
                     ggml_profile_record rec;
                     rec.type      = GGML_PROFILE_EVENT_OP;
                     rec.name      = ggml_op_name(node->op);
                     rec.split_id  = cuda_ctx->profiling_split_id;
-                    rec.start_ns  = 0;  // not used for CUDA
-                    rec.end_ns    = 0;  // not used for CUDA
+                    rec.start_ns  = start_ns;
+                    rec.end_ns    = end_ns;
                     rec.bytes     = ggml_nbytes(node);
                     rec.extra     = NULL;
                     ggml_profile_record_from_tensor(&rec, node);
-                    // Store duration in end_ns field (converted to ns)
-                    rec.end_ns = (uint64_t)(ms * 1000000.0f);
                     cuda_ctx->profiling_records.push_back(rec);
                 }
 #endif

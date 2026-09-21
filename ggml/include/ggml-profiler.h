@@ -156,12 +156,20 @@ GGML_API int ggml_backend_sched_write_profiling_text(ggml_backend_sched_t sched,
 // A single function span record. The name is a pointer to a static string
 // (the instrumentation sites pass string literals), so recording a scope
 // does not require copying any string data.
+//
+// `type` and `backend_id` are stamped as -1 because function-level spans are
+// not tied to any specific backend or event category (the op-level records
+// use type 0/1 and a real backend index). Keeping these fields in the struct
+// makes the JSON schema uniform across op-level and function-level records
+// and lets the trace exporter apply the same relative-time conversion.
 struct ggml_fn_profile_record {
     const char * name;
     uint64_t     start_ns; // ggml_profiler_time_ns() epoch
     uint64_t     end_ns;   // 0 while the scope is still open
     int32_t      pid;
     int32_t      tid;
+    int32_t      type;        // event type: -1 for function-level spans
+    int32_t      backend_id;  // backend index: -1 (not tied to a backend)
 };
 
 // Runtime on/off switch (see also the GGML_PROFILE environment variable, the

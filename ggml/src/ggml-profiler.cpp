@@ -275,7 +275,10 @@ bool ggml_fn_profiler_scope_begin(const char * name) {
 
     ggml_fn_profile_thread & tls = g_fn_prof_tls; // constructed lazily on first use in this thread
 
-    tls.records.push_back({ name, ggml_profiler_time_ns(), 0, ggml_fn_prof_pid(), tls.tid });
+    // type=-1 and backend_id=-1 mark this as a function-level span with no
+    // backend association, so the trace exporter treats it uniformly with
+    // op-level records (which carry type 0/1 and a real backend index).
+    tls.records.push_back({ name, ggml_profiler_time_ns(), 0, ggml_fn_prof_pid(), tls.tid, -1, -1 });
     tls.open.push_back(tls.records.size() - 1);
     g_fn_prof_n_records.fetch_add(1, std::memory_order_relaxed);
 
@@ -476,7 +479,8 @@ int ggml_fn_profiler_write_records_json(FILE * fp) {
 
         fprintf(fp, "    {\"name\": \"");
         ggml_fn_profiler_json_escape(fp, rec.name != NULL ? rec.name : "unknown");
-        fprintf(fp, "\", \"start_ns\": %llu, \"end_ns\": %llu, \"pid\": %d, \"tid\": %d}%s\n",
+        fprintf(fp, "\", \"type\": %d, \"backend_id\": %d, \"start_ns\": %llu, \"end_ns\": %llu, \"pid\": %d, \"tid\": %d}%s\n",
+                (int) rec.type, (int) rec.backend_id,
                 (unsigned long long) rec.start_ns, (unsigned long long) rec.end_ns,
                 rec.pid, rec.tid, (i + 1 < recs.size()) ? "," : "");
     }
